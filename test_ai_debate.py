@@ -1,8 +1,9 @@
 import pytest
 import os
-from unittest.mock import Mock, patch
-from ai_debate import AIDebater
+import asyncio
+from unittest.mock import Mock, patch, AsyncMock
 from collections import deque
+from ai_debate import AIDebater
 
 @pytest.fixture
 def mock_openai_response():
@@ -38,7 +39,7 @@ def test_debate_flow(mock_openai, debater, mock_openai_response):
     
     debater.client = mock_client
     ground_statement = "Test statement"
-    results = debater.debate(ground_statement, max_rounds=1)
+    results = debater.debate(ground_statement, max_rounds=1, generate_audio=False)
     
     assert results[0] == ground_statement
     assert len(results) == 3  # Ground statement + 2 AI responses
@@ -52,7 +53,7 @@ def test_surrender_condition(mock_openai, debater):
     mock_openai.return_value = mock_client
     
     debater.client = mock_client
-    results = debater.debate("Test statement", max_rounds=3)
+    results = debater.debate("Test statement", max_rounds=3, generate_audio=False)
     
     assert len(results) == 2  # Ground statement + surrender response
     assert "surrender" in results[-1].lower()
@@ -70,7 +71,7 @@ def test_debate_file_output(mock_openai, debater, mock_openai_response):
     if os.path.exists('debate.txt'):
         os.remove('debate.txt')
     
-    results = debater.debate(ground_statement, max_rounds=1)
+    results = debater.debate(ground_statement, max_rounds=1, generate_audio=False)
     
     # Check if file exists and contains correct content
     assert os.path.exists('debate.txt')
@@ -97,7 +98,7 @@ def test_debate_history_in_context(mock_openai, debater):
     
     debater.client = mock_client
     ground_statement = "Test statement"
-    debater.debate(ground_statement, max_rounds=1)
+    debater.debate(ground_statement, max_rounds=1, generate_audio=False)
     
     # Get the calls made to the API
     calls = mock_client.chat.completions.create.call_args_list
@@ -105,7 +106,6 @@ def test_debate_history_in_context(mock_openai, debater):
     # Check second API call includes previous context
     second_call = calls[1][1]['messages'][0]['content']
     assert "Ground Statement: Test statement" in second_call
-    # The first response should be labeled as "AI Debater 1"
     assert "AI Debater 1: First response" in second_call
 
     # Verify both AIs get the complete history

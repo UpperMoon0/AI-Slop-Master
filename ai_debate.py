@@ -3,6 +3,8 @@ from typing import List, Optional
 from collections import deque
 from openai import OpenAI
 from dotenv import load_dotenv
+import asyncio
+from debate_to_speech import process_debate
 
 load_dotenv()
 
@@ -78,7 +80,7 @@ class AIDebater:
         self.debate_history.append(argument)  
         return argument
 
-    def debate(self, ground_statement: str, max_rounds: int = 5) -> List[str]:
+    def debate(self, ground_statement: str, max_rounds: int = 5, generate_audio: bool = True) -> List[str]:
         print(f"Ground Statement: {ground_statement}\n")
         self.ground_statement = ground_statement
         self.debate_history.clear()
@@ -116,6 +118,11 @@ class AIDebater:
             if "surrender" in ai2_response.lower():
                 print("\nAI 2 has surrendered!")
                 break
+        
+        # Generate audio version of the debate if requested
+        if generate_audio:
+            print("\nGenerating audio version of the debate...")
+            asyncio.run(process_debate())
         
         # Prepare complete history for return
         full_history = [ground_statement] + list(self.debate_history)
