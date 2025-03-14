@@ -39,5 +39,4 @@ ENV/
 .DS_Store
 *.log
 debate.txt
-/audio_output
 /outputs
