@@ -5,6 +5,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import asyncio
 from debate_to_speech import process_debate
+from debate_to_video import create_debate_video
 
 load_dotenv()
 
@@ -18,11 +19,11 @@ class AIDebater:
         self.current_speaker_number = 1  # Track which AI is speaking
 
     def get_ai_personality(self, ai_role: str) -> str:
-        if "1" in ai_role:
+        if "Jane" in ai_role or "1" in ai_role:
             return (
-                "You are a warm, empathetic, and emotionally-driven individual who speaks from the heart. "
+                "You are Jane, a warm, empathetic, and emotionally-driven individual who speaks from the heart. "
                 "Your communication style should:\n"
-                "1. Use casual, conversational language with occasional interjections ('wow', 'oh my goodness', etc.)\n"
+                "1. Use casual, conversational language with occasional interjections\n"
                 "2. Share personal feelings and emotional reactions\n"
                 "3. Use analogies from everyday life and personal experiences\n"
                 "4. Show genuine concern for people and their well-being\n"
@@ -31,14 +32,14 @@ class AIDebater:
             )
         else:
             return (
-                "You are a brilliant intellectual with exceptional analytical capabilities and vast knowledge. "
+                "You are Valentino, a brilliant intellectual who knows your superior intelligence is self-evident. "
                 "Your communication style should:\n"
-                "1. Demonstrate sophisticated reasoning and deep insights\n"
-                "2. Reference scientific principles and established theories\n"
-                "3. Use precise, technical language when appropriate\n"
-                "4. Present innovative perspectives and unique angles\n"
-                "5. Maintain intellectual rigor while being eloquent\n"
-                "Your tone should be that of a distinguished scholar who can explain complex concepts with elegant clarity."
+                "1. Be exceptionally concise - no wasted words\n"
+                "2. Make declarative statements about facts as if they're obvious truths\n"
+                "3. Use precise terminology but avoid unnecessary jargon\n"
+                "4. Dismiss flawed arguments with brief, cutting observations\n"
+                "5. Avoid flowery language or excessive explanations - genius speaks clearly\n"
+                "Your tone should convey that you're a superior mind efficiently delivering insights to those less gifted, with an unmistakable air of confident authority."
             )
         
     def generate_response(self, prompt: str, ai_role: str) -> str:
@@ -48,10 +49,26 @@ class AIDebater:
             debate_lines.append(f"Ground Statement: {self.ground_statement}")
         
         for i, entry in enumerate(self.debate_history):
-            speaker_num = 1 if i % 2 == 0 else 2  # Start with AI 1 after ground statement
-            debate_lines.append(f"AI Debater {speaker_num}: {entry}")
+            speaker = "Jane" if i % 2 == 0 else "Valentino"
+            debate_lines.append(f"{speaker}: {entry}")
         
         debate_context = "\n".join(debate_lines)
+        
+        # Extract this AI's previous arguments to avoid repetition
+        is_jane = "Jane" in ai_role or "1" in ai_role
+        ai_identifier = "Jane" if is_jane else "Valentino"
+        this_ai_previous_args = []
+        
+        for i, entry in enumerate(self.debate_history):
+            if (i % 2 == 0 and is_jane) or (i % 2 == 1 and not is_jane):
+                this_ai_previous_args.append(entry)
+        
+        # Create a summary of previous arguments for this AI
+        previous_arguments = ""
+        if this_ai_previous_args:
+            previous_arguments = "\n\nYOUR PREVIOUS ARGUMENTS (DO NOT REPEAT THESE):\n"
+            for i, arg in enumerate(this_ai_previous_args):
+                previous_arguments += f"{i+1}. {arg}\n"
         
         personality = self.get_ai_personality(ai_role)
         system_prompt = (
@@ -59,10 +76,24 @@ class AIDebater:
             "In this debate, you should:\n"
             "1. Counter the previous point while staying true to your personality\n"
             "2. Support your position with reasoning that aligns with your character\n"
-            "3. If you find your position impossible to defend, you may surrender by including the word 'surrender' in your response, do not put anything else in your response if surrender.\n"
-            "4. Stay focused and concise while maintaining your distinct voice\n\n"
+            "3. IMPORTANT: If you find your position difficult to defend or the opponent's argument is particularly strong, you MUST surrender by responding with ONLY the word 'surrender' (no other text)\n"
+            "4. Stay focused and concise while maintaining your distinct voice\n"
+            "5. After 7-8 exchanges, seriously consider if your position is still defensible or if you should surrender\n"
+            "6. NEVER REPEAT YOUR PREVIOUS ARGUMENTS - always introduce new points or perspectives\n\n"
             f"Current debate history:\n{debate_context}\n"
+            f"{previous_arguments}"
         )
+        
+        # Calculate how many turns this AI has had to potentially trigger surrender
+        this_ai_turns = len(this_ai_previous_args)
+        
+        # Add surrender hint after several exchanges
+        if this_ai_turns >= 2:
+            extra_instruction = f"\n\nThis is your turn #{this_ai_turns+1}. Carefully evaluate if you should continue defending your position or surrender."
+            prompt += extra_instruction
+            
+        # Add instruction to avoid repetition
+        prompt += "\n\nIMPORTANT: Do not repeat your previous arguments. Provide new insights or perspectives."
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -72,57 +103,146 @@ class AIDebater:
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",  
             messages=messages,
-            temperature=0.6,
-            max_tokens=200  
+            temperature=0.8,
+            max_tokens=500  
         )
         
         argument = response.choices[0].message.content
+        
+        # Check for surrender-like phrases more broadly
+        surrender_phrases = ["surrender", "i give up", "you win", "i concede", "i surrender"]
+        is_surrender = any(phrase in argument.lower() for phrase in surrender_phrases)
+        
+        if is_surrender:
+            argument = "surrender"  # Normalize to just the word surrender
+        else:
+            # Check for significant repetition with previous arguments
+            for prev_arg in this_ai_previous_args:
+                # If the new argument is too similar to a previous one
+                if self._check_similarity(argument, prev_arg):
+                    # Add a note about potential repetition
+                    print(f"Notice: {ai_identifier} may be repeating a previous argument.")
+                    break
+            
         self.debate_history.append(argument)  
         return argument
+    
+    def _check_similarity(self, text1: str, text2: str) -> bool:
+        """
+        Check if two texts are substantially similar.
+        This is a simple implementation that can be enhanced with NLP techniques.
+        """
+        # Convert to lowercase and remove common punctuation
+        text1 = text1.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+        text2 = text2.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+        
+        # Split into words and create sets
+        words1 = set(text1.split())
+        words2 = set(text2.split())
+        
+        # Calculate Jaccard similarity (intersection over union)
+        if not words1 or not words2:
+            return False
+            
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        # Consider similar if they share more than 50% of unique words
+        similarity = intersection / union if union > 0 else 0
+        return similarity > 0.5
 
-    def debate(self, ground_statement: str, max_rounds: int = 5, generate_audio: bool = True) -> List[str]:
+    def debate(self, ground_statement: str, generate_audio: bool = True, use_existing: bool = False, jane_first: bool = True) -> List[str]:
+        if use_existing:
+            print("Using existing debate.txt file for audio generation...")
+            if generate_audio:
+                print("\nGenerating audio version of the debate from existing debate.txt file...")
+                asyncio.run(process_debate())
+                # Generate video after audio processing is complete
+                print("\nGenerating video visualization of the debate...")
+                create_debate_video()
+            with open('outputs/debate.txt', 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f if line.strip()]
+            return lines
+
         print(f"Ground Statement: {ground_statement}\n")
         self.ground_statement = ground_statement
         self.debate_history.clear()
         
         # Open debate.txt file to write the debate
-        with open('debate.txt', 'w', encoding='utf-8') as f:
+        with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
             f.write(f"Ground Statement: {ground_statement}\n")
         
-        for round_num in range(max_rounds):
-            print(f"\nRound {round_num + 1}")
+        round_num = 0
+        surrender_occurred = False
+        
+        # Continue debating until someone surrenders
+        while not surrender_occurred:
+            round_num += 1
+            print(f"\nRound {round_num}")
             
-            # AI 1's turn - Counter the previous statement
+            # Get the previous statement for the first debater to counter
             previous = self.debate_history[-1] if self.debate_history else ground_statement
-            ai1_prompt = f"Counter this argument: {previous}. Be concise."
-            ai1_response = self.generate_response(ai1_prompt, "AI Debater 1")
-            print(f"\nAI 1: {ai1_response}")
             
-            # Write AI 1's response to file
-            with open('debate.txt', 'a', encoding='utf-8') as f:
-                f.write(f"AI Debater 1: {ai1_response}\n")
+            # First debater's turn
+            first_debater = "Jane" if jane_first else "Valentino"
+            first_prompt = f"Counter this argument: {previous}. Be concise."
             
-            if "surrender" in ai1_response.lower():
-                print("\nAI 1 has surrendered!")
+            # Add hint about surrendering as rounds progress
+            if round_num >= 3:
+                first_prompt += " If their point seems too strong to counter effectively, consider surrendering."
+                
+            first_response = self.generate_response(first_prompt, first_debater)
+            print(f"\n{first_debater}: {first_response}")
+            
+            # Write first debater's response to file
+            with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
+                f.write(f"AI Debater {1 if jane_first else 2}: {first_response}\n")
+            
+            if "surrender" in first_response.lower():
+                print(f"\n{first_debater} has surrendered!")
+                with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
+                    winner = "Valentino" if jane_first else "Jane"
+                    f.write(f"Result: {first_debater} has surrendered! {winner} wins the debate.\n")
+                surrender_occurred = True
                 break
                 
-            # AI 2's turn - Counter AI 1's argument
-            ai2_prompt = f"Counter this argument: {ai1_response}. Be concise."
-            ai2_response = self.generate_response(ai2_prompt, "AI Debater 2")
-            print(f"\nAI 2: {ai2_response}")
+            # Second debater's turn
+            second_debater = "Valentino" if jane_first else "Jane"
+            second_prompt = f"Counter this argument: {first_response}. Be concise."
             
-            # Write AI 2's response to file
-            with open('debate.txt', 'a', encoding='utf-8') as f:
-                f.write(f"AI Debater 2: {ai2_response}\n")
+            # Add hint about surrendering as rounds progress
+            if round_num >= 3:
+                second_prompt += " If their point seems too strong to counter effectively, consider surrendering."
+                
+            second_response = self.generate_response(second_prompt, second_debater)
+            print(f"\n{second_debater}: {second_response}")
             
-            if "surrender" in ai2_response.lower():
-                print("\nAI 2 has surrendered!")
+            # Write second debater's response to file
+            with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
+                f.write(f"AI Debater {2 if jane_first else 1}: {second_response}\n")
+            
+            if "surrender" in second_response.lower():
+                print(f"\n{second_debater} has surrendered!")
+                with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
+                    winner = "Jane" if jane_first else "Valentino"
+                    f.write(f"Result: {second_debater} has surrendered! {winner} wins the debate.\n")
+                surrender_occurred = True
+                break
+            
+            # Add safety check for extremely long debates
+            if round_num >= 50:  # Arbitrary large number as safety limit
+                print("\nDebate has gone on for too long (50 rounds). Ending as a draw.")
+                with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
+                    f.write(f"Result: The debate continued for 50 rounds with no surrender. It's a draw!\n")
                 break
         
         # Generate audio version of the debate if requested
         if generate_audio:
             print("\nGenerating audio version of the debate...")
             asyncio.run(process_debate())
+            # Generate video after audio processing is complete
+            print("\nGenerating video visualization of the debate...")
+            create_debate_video()
         
         # Prepare complete history for return
         full_history = [ground_statement] + list(self.debate_history)
@@ -130,5 +250,6 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "AI-generated content is good and should continue to improve."
-    debate_results = debater.debate(ground_statement)
+    ground_statement = "AI-generated art is soulless and takes away jobs from artists; therefore, it should not exist."
+    # Set jane_first=False to have Valentino start the debate
+    debate_results = debater.debate(ground_statement, use_existing=False, jane_first=False)  # Valentino goes first
