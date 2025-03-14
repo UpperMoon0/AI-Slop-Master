@@ -40,3 +40,4 @@ ENV/
 *.log
 debate.txt
 /audio_output
+/outputs
