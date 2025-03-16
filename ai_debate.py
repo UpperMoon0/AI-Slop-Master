@@ -14,9 +14,9 @@ class AIDebater:
     
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.debate_history = deque(maxlen=self.MAX_HISTORY)  # Removed +1 since ground statement is stored separately
+        self.debate_history = deque(maxlen=self.MAX_HISTORY)
         self.ground_statement = None
-        self.current_speaker_number = 1  # Track which AI is speaking
+        self.current_speaker_number = 1
 
     def get_ai_personality(self, ai_role: str) -> str:
         if "Jane" in ai_role or "1" in ai_role:
@@ -41,65 +41,16 @@ class AIDebater:
                 "5. Avoid flowery language or excessive explanations - genius speaks clearly\n"
                 "Your tone should convey that you're a superior mind efficiently delivering insights to those less gifted, with an unmistakable air of confident authority."
             )
-        
+
     def generate_response(self, prompt: str, ai_role: str) -> str:
-        # Create a formatted debate history string
-        debate_lines = []
-        if self.ground_statement:
-            debate_lines.append(f"Ground Statement: {self.ground_statement}")
-        
-        for i, entry in enumerate(self.debate_history):
-            speaker = "Jane" if i % 2 == 0 else "Valentino"
-            debate_lines.append(f"{speaker}: {entry}")
-        
-        debate_context = "\n".join(debate_lines)
-        
-        # Extract this AI's previous arguments to avoid repetition
-        is_jane = "Jane" in ai_role or "1" in ai_role
-        ai_identifier = "Jane" if is_jane else "Valentino"
-        this_ai_previous_args = []
-        
-        for i, entry in enumerate(self.debate_history):
-            if (i % 2 == 0 and is_jane) or (i % 2 == 1 and not is_jane):
-                this_ai_previous_args.append(entry)
-        
-        # Create a summary of previous arguments for this AI
-        previous_arguments = ""
-        if this_ai_previous_args:
-            previous_arguments = "\n\nYOUR PREVIOUS ARGUMENTS (DO NOT REPEAT THESE):\n"
-            for i, arg in enumerate(this_ai_previous_args):
-                previous_arguments += f"{i+1}. {arg}\n"
-        
-        personality = self.get_ai_personality(ai_role)
-        system_prompt = (
-            f"{personality}\n\n"
-            "In this debate, you should:\n"
-            "1. Counter the previous point while staying true to your personality\n"
-            "2. Support your position with reasoning that aligns with your character\n"
-            "3. IMPORTANT: If you find your position difficult to defend or the opponent's argument is particularly strong, you MUST surrender by responding with ONLY the word 'surrender' (no other text)\n"
-            "4. Stay focused and concise while maintaining your distinct voice\n"
-            "5. After 7-8 exchanges, seriously consider if your position is still defensible or if you should surrender\n"
-            "6. NEVER REPEAT YOUR PREVIOUS ARGUMENTS - always introduce new points or perspectives\n\n"
-            f"Current debate history:\n{debate_context}\n"
-            f"{previous_arguments}"
-        )
-        
-        # Calculate how many turns this AI has had to potentially trigger surrender
-        this_ai_turns = len(this_ai_previous_args)
-        
-        # Add surrender hint after several exchanges
-        if this_ai_turns >= 2:
-            extra_instruction = f"\n\nThis is your turn #{this_ai_turns+1}. Carefully evaluate if you should continue defending your position or surrender."
-            prompt += extra_instruction
-            
-        # Add instruction to avoid repetition
-        prompt += "\n\nIMPORTANT: Do not repeat your previous arguments. Provide new insights or perspectives."
+        """Generate a response using OpenAI's API."""
+        ai_personality = self.get_ai_personality(ai_role)
         
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": ai_personality},
             {"role": "user", "content": prompt}
         ]
-            
+        
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",  
             messages=messages,
@@ -107,49 +58,45 @@ class AIDebater:
             max_tokens=500  
         )
         
-        argument = response.choices[0].message.content
+        argument = response.choices[0].message.content.strip()
         
-        # Check for surrender-like phrases more broadly
+        # Check for surrender phrases in lowercase for consistency
         surrender_phrases = ["surrender", "i give up", "you win", "i concede", "i surrender"]
-        is_surrender = any(phrase in argument.lower() for phrase in surrender_phrases)
-        
-        if is_surrender:
-            argument = "surrender"  # Normalize to just the word surrender
-        else:
-            # Check for significant repetition with previous arguments
-            for prev_arg in this_ai_previous_args:
-                # If the new argument is too similar to a previous one
-                if self._check_similarity(argument, prev_arg):
-                    # Add a note about potential repetition
-                    print(f"Notice: {ai_identifier} may be repeating a previous argument.")
-                    break
+        if any(phrase in argument.lower() for phrase in surrender_phrases):
+            self.debate_history.append("surrender")
+            return "surrender"
             
-        self.debate_history.append(argument)  
+        self.debate_history.append(argument)
         return argument
-    
+
     def _check_similarity(self, text1: str, text2: str) -> bool:
         """
         Check if two texts are substantially similar.
-        This is a simple implementation that can be enhanced with NLP techniques.
+        Uses a combination of word overlap and word order.
         """
         # Convert to lowercase and remove common punctuation
         text1 = text1.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
         text2 = text2.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
         
-        # Split into words and create sets
-        words1 = set(text1.split())
-        words2 = set(text2.split())
+        # Split into words and create lists
+        words1 = text1.split()
+        words2 = text2.split()
         
-        # Calculate Jaccard similarity (intersection over union)
+        # Empty texts aren't similar
         if not words1 or not words2:
             return False
             
-        intersection = len(words1.intersection(words2))
-        union = len(words1.union(words2))
+        # Create sets for intersection
+        set1 = set(words1)
+        set2 = set(words2)
         
-        # Consider similar if they share more than 50% of unique words
-        similarity = intersection / union if union > 0 else 0
-        return similarity > 0.5
+        # Calculate Jaccard similarity
+        intersection = len(set1.intersection(set2))
+        union = len(set1.union(set2))
+        
+        # Consider similar if they share more than 25% of unique words
+        jaccard_similarity = intersection / union if union > 0 else 0
+        return jaccard_similarity > 0.25
 
     def debate(self, ground_statement: str, generate_audio: bool = True, use_existing: bool = False, jane_first: bool = True) -> List[str]:
         if use_existing:
@@ -168,7 +115,7 @@ class AIDebater:
         self.ground_statement = ground_statement
         self.debate_history.clear()
         
-        # Add narrator introduction and ground statement
+        # Generate debate.txt file with initial content
         self.generate_debate()
         
         round_num = 0
@@ -193,14 +140,16 @@ class AIDebater:
             first_response = self.generate_response(first_prompt, first_debater)
             print(f"\n{first_debater}: {first_response}")
             
-            # Write first debater's response to file
+            # Write first debater's response to file, ensuring consistent AI Debater numbering
             with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
-                f.write(f"AI Debater {1 if jane_first else 2}: {first_response}\n")
+                # Jane is always AI Debater 1, Valentino is always AI Debater 2
+                debater_num = "1" if first_debater == "Jane" else "2"
+                f.write(f"AI Debater {debater_num}: {first_response}\n")
             
             if "surrender" in first_response.lower():
                 print(f"\n{first_debater} has surrendered!")
                 with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
-                    winner = "Valentino" if jane_first else "Jane"
+                    winner = "Valentino" if first_debater == "Jane" else "Jane"
                     f.write(f"Result: {first_debater} has surrendered! {winner} wins the debate.\n")
                 surrender_occurred = True
                 break
@@ -216,14 +165,16 @@ class AIDebater:
             second_response = self.generate_response(second_prompt, second_debater)
             print(f"\n{second_debater}: {second_response}")
             
-            # Write second debater's response to file
+            # Write second debater's response to file, ensuring consistent AI Debater numbering
             with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
-                f.write(f"AI Debater {2 if jane_first else 1}: {second_response}\n")
+                # Jane is always AI Debater 1, Valentino is always AI Debater 2
+                debater_num = "1" if second_debater == "Jane" else "2"
+                f.write(f"AI Debater {debater_num}: {second_response}\n")
             
             if "surrender" in second_response.lower():
                 print(f"\n{second_debater} has surrendered!")
                 with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
-                    winner = "Jane" if jane_first else "Valentino"
+                    winner = "Jane" if second_debater == "Valentino" else "Valentino"
                     f.write(f"Result: {second_debater} has surrendered! {winner} wins the debate.\n")
                 surrender_occurred = True
                 break

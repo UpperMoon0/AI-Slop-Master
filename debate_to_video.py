@@ -1,6 +1,7 @@
 import os
 import cv2
 from moviepy.editor import AudioFileClip, ImageSequenceClip, concatenate_videoclips, VideoFileClip
+import moviepy.config as mpconfig
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from pydub import AudioSegment
@@ -8,11 +9,18 @@ import json
 import multiprocessing as mp
 from functools import partial
 import gc
+import shutil
+import tempfile
+
+# Configure MoviePy to use a custom temp folder to avoid filling up C drive
+PROJECT_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'moviepy_temp')
+os.makedirs(PROJECT_TEMP_DIR, exist_ok=True)
+mpconfig.change_settings({"TEMP_DIR": PROJECT_TEMP_DIR})
 
 # Constants for video generation
 VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 720
-FPS = 24
+FPS = 30  # Updated from 24 to 30
 BACKGROUND_COLOR = (240, 240, 240)
 HIGHLIGHT_COLOR = (255, 223, 0)
 TEXT_COLOR = (0, 0, 0)
@@ -56,6 +64,58 @@ def wrap_text(text, font, max_width):
     
     return lines
 
+def split_text_into_smaller_parts(text):
+    """
+    Split text into smaller parts (sentences or parts of sentences) for better subtitle timing.
+    """
+    # First, split by sentence endings (., !, ?)
+    sentence_delimiters = ['. ', '! ', '? ']
+    sentences = []
+    current_text = text
+    
+    # Extract sentences
+    for delimiter in sentence_delimiters:
+        parts = current_text.split(delimiter)
+        for i in range(len(parts) - 1):
+            sentences.append(parts[i] + delimiter.rstrip())
+        current_text = parts[-1]
+    
+    # Add the last part if it's not empty
+    if current_text.strip():
+        sentences.append(current_text.strip())
+    
+    # Now further split long sentences
+    max_words_per_segment = 15
+    final_segments = []
+    
+    for sentence in sentences:
+        words = sentence.split()
+        
+        if len(words) <= max_words_per_segment:
+            final_segments.append(sentence)
+        else:
+            # Split into smaller chunks based on commas or just word count
+            # Try to split by commas first
+            comma_parts = sentence.split(', ')
+            temp_parts = []
+            
+            for part in comma_parts:
+                part_words = part.split()
+                if len(part_words) <= max_words_per_segment:
+                    temp_parts.append(part)
+                else:
+                    # Further split by word count if still too long
+                    for i in range(0, len(part_words), max_words_per_segment):
+                        chunk = part_words[i:i + max_words_per_segment]
+                        temp_parts.append(' '.join(chunk))
+            
+            # Add commas back except for the last part
+            for i in range(len(temp_parts) - 1):
+                final_segments.append(temp_parts[i] + ',')
+            final_segments.append(temp_parts[-1])
+    
+    return final_segments
+
 def parse_debate_file():
     """Parse debate.txt file to get dialogue segments and speakers."""
     dialogue_segments = []
@@ -71,21 +131,23 @@ def parse_debate_file():
                     speaker = "Narrator"
                     text = line.replace("Narrator:", "").strip()
                 elif line.startswith("Ground Statement:"):
-                    speaker = "Narrator"  # Changed from "Ground" to "Narrator"
-                    text = line  # Keep the full line for ground statement
+                    speaker = "Narrator"
+                    text = line.strip()
                 elif line.startswith("AI Debater 1:"):
-                    speaker = "Jane"
+                    speaker = "Jane"  # AI Debater 1 is always Jane
                     text = line.replace("AI Debater 1:", "").strip()
                 elif line.startswith("AI Debater 2:"):
-                    speaker = "Valentino"
+                    speaker = "Valentino"  # AI Debater 2 is always Valentino
                     text = line.replace("AI Debater 2:", "").strip()
                 elif line.startswith("Result:"):
-                    speaker = "Narrator"  # Changed from "Result" to "Narrator"
-                    text = line  # Keep the full line for result
+                    speaker = "Narrator"
+                    text = line.strip()
                 else:
                     continue
-                    
-                dialogue_segments.append({"speaker": speaker, "text": text})
+                
+                if text:
+                    dialogue_segments.append({"speaker": speaker, "text": text})
+    
     except (FileNotFoundError, IOError) as e:
         print(f"Error reading debate file: {str(e)}")
     
@@ -149,18 +211,28 @@ def get_segment_timing(audio_file):
     try:
         with open(timing_file, 'r') as f:
             timing_data = json.load(f)
-            return timing_data.get("segments", [])
+            segments = timing_data.get("segments", [])
+            # Ensure each segment has the required timing fields
+            for segment in segments:
+                if isinstance(segment, dict):
+                    if "start_time" not in segment:
+                        segment["start_time"] = segment.get("start", 0)
+                    if "end_time" not in segment:
+                        segment["end_time"] = segment.get("end", 5)
+            return segments
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
 def get_current_subtitle(timing_segments, current_time, original_text):
     """Get the subtitle text that should be displayed at the current time."""
     if not timing_segments:
-        return ""
+        return original_text
         
     for segment in timing_segments:
-        if segment["start_time"] <= current_time <= segment["end_time"]:
-            return original_text  # Use the original text instead of recognized text
+        start_time = segment.get("start_time", 0)
+        end_time = segment.get("end_time", 5)
+        if start_time <= current_time <= end_time:
+            return original_text
             
     return ""  # No subtitle for this time
 
@@ -193,13 +265,11 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             draw = ImageDraw.Draw(pil_img)
             
-            # Split text into smaller chunks for display
-            chunks = split_text_into_chunks(text, chunk_size=8)
-            if chunks:
-                chunk_duration = total_duration / len(chunks)
-                current_chunk_index = min(int(current_time / chunk_duration), len(chunks) - 1)
-                subtitle_text = chunks[current_chunk_index]
-                
+            # With our new approach, each text segment is already the correct size
+            # for a subtitle, so we can just use the full text
+            subtitle_text = text
+            
+            if subtitle_text:
                 # Wrap text to fit screen width with padding
                 max_width = VIDEO_WIDTH - 100  # Leave 50px padding on each side
                 wrapped_lines = wrap_text(subtitle_text, TEXT_FONT, max_width)
@@ -281,30 +351,8 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             draw.text((jane_name_x, jane_name_y), "Jane", fill=TEXT_COLOR, font=NAME_FONT)
             draw.text((valentino_name_x, valentino_name_y), "Valentino", fill=TEXT_COLOR, font=NAME_FONT)
         
-        # For subtitle text, use timing information if available
-        color = TEXT_COLOR
-        subtitle_text = ""
-        
-        if timing_segments:
-            # Find the segment that matches the current time
-            for segment in timing_segments:
-                if segment["start_time"] <= current_time <= segment["end_time"]:
-                    subtitle_text = segment["text"]
-                    break
-            
-            # If no direct match, get the subtitle based on the current position
-            if not subtitle_text:
-                chunks = split_text_into_chunks(text, chunk_size=8)  # Smaller chunks (8 words)
-                if chunks:
-                    chunk_duration = total_duration / len(chunks)
-                    current_chunk_index = min(int(current_time / chunk_duration), len(chunks) - 1)
-                    subtitle_text = chunks[current_chunk_index]
-        else:
-            chunks = split_text_into_chunks(text, chunk_size=8)  # Smaller chunks (8 words)
-            if chunks:
-                chunk_duration = total_duration / len(chunks)
-                current_chunk_index = min(int(current_time / chunk_duration), len(chunks) - 1)
-                subtitle_text = chunks[current_chunk_index]
+        # For subtitle text - use the full current segment since we've already pre-split the text
+        subtitle_text = text
         
         if subtitle_text:
             # Wrap subtitle text
@@ -326,7 +374,7 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
                 text_x = (VIDEO_WIDTH - text_width) // 2
                 
                 # Draw text directly without background or shadow
-                draw.text((text_x, text_y), line, fill=color, font=TEXT_FONT)
+                draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
                 
                 text_y += line_height + line_spacing
         
@@ -387,9 +435,13 @@ def create_debate_video():
         print("No dialogue segments found. Aborting video creation.")
         return
     
-    # Initialize multiprocessing pool with fewer cores to reduce memory pressure
-    num_cores = max(min(mp.cpu_count() - 1, 2), 1)  # Use at most 2 cores
+    # Use more cores for faster processing
+    num_cores = max(mp.cpu_count() - 1, 1)  # Use all available cores except one
     pool = mp.Pool(num_cores)
+    
+    # Create temp frames directory
+    temp_frames_dir = os.path.join('outputs', 'temp_frames')
+    os.makedirs(temp_frames_dir, exist_ok=True)
     
     try:
         print(f"Generating video frames using {num_cores} cores...")
@@ -474,53 +526,69 @@ def create_debate_video():
                 temp_files = []
                 
                 for i, clip in enumerate(all_clips):
-                    temp_file = f"outputs/temp_frames/seg_{i:03d}.mp4"
-                    os.makedirs(os.path.dirname(temp_file), exist_ok=True)
+                    temp_file = os.path.join(temp_frames_dir, f"seg_{i:03d}.mp4")
                     
                     print(f"Writing segment {i+1}/{len(all_clips)}...")
-                    clip.write_videofile(
-                        temp_file,
-                        fps=24,
-                        codec='libx264',
-                        audio_codec='aac',
-                        preset='ultrafast',  # Use fastest preset to reduce processing time
-                        threads=num_cores,
-                        verbose=False,
-                        logger=None
-                    )
-                    temp_files.append(temp_file)
+                    try:
+                        clip.write_videofile(
+                            temp_file,
+                            fps=FPS,  # Use constant FPS value
+                            codec='libx264',
+                            audio_codec='aac',
+                            preset='ultrafast',  # Use fastest preset to reduce processing time
+                            threads=num_cores,
+                            verbose=False,
+                            logger=None,
+                            temp_audiofile=os.path.join(PROJECT_TEMP_DIR, f"temp_audio_{i}.m4a")  # Specify temp audio file location
+                        )
+                        temp_files.append(temp_file)
+                    except Exception as e:
+                        print(f"Error writing segment {i}: {str(e)}")
                     
-                    # Close and clean up the clip
+                    # Close and clean up the clip immediately after writing
                     clip.close()
+                
+                # Clear all_clips to free memory
+                all_clips = []
+                gc.collect()
                 
                 print("Creating final video...")
                 # Read back all temp videos
                 video_clips = []
                 for temp_file in temp_files:
                     if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
-                        clip = VideoFileClip(temp_file)
-                        video_clips.append(clip)
+                        try:
+                            clip = VideoFileClip(temp_file)
+                            video_clips.append(clip)
+                        except Exception as e:
+                            print(f"Error loading clip {temp_file}: {str(e)}")
                 
                 if video_clips:
                     # Concatenate all clips
-                    final_clip = concatenate_videoclips(video_clips, method="compose")
+                    try:
+                        final_clip = concatenate_videoclips(video_clips, method="compose")
+                        
+                        # Write final video
+                        final_clip.write_videofile(
+                            output_file,
+                            fps=FPS,  # Use constant FPS value
+                            codec='libx264',
+                            audio_codec='aac',
+                            preset='medium',  # Better quality for final output
+                            threads=num_cores,
+                            verbose=False,
+                            logger=None,
+                            temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio.m4a")
+                        )
+                        
+                        print(f"Video saved as: {output_file}")
+                        
+                        # Clean up final clip
+                        final_clip.close()
+                    except Exception as e:
+                        print(f"Error concatenating clips: {str(e)}")
                     
-                    # Write final video
-                    final_clip.write_videofile(
-                        output_file,
-                        fps=24,
-                        codec='libx264',
-                        audio_codec='aac',
-                        preset='medium',  # Better quality for final output
-                        threads=num_cores,
-                        verbose=False,
-                        logger=None
-                    )
-                    
-                    print(f"Video saved as: {output_file}")
-                    
-                    # Clean up
-                    final_clip.close()
+                    # Clean up video clips
                     for clip in video_clips:
                         clip.close()
                 else:
@@ -529,7 +597,10 @@ def create_debate_video():
                 # Clean up temp files
                 for temp_file in temp_files:
                     if os.path.exists(temp_file):
-                        os.remove(temp_file)
+                        try:
+                            os.remove(temp_file)
+                        except:
+                            pass
                 
             except Exception as e:
                 print(f"Error creating final video: {str(e)}")
@@ -555,10 +626,13 @@ def create_debate_video():
                             preset='ultrafast',
                             threads=num_cores,
                             verbose=False,
-                            logger=None
+                            logger=None,
+                            temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_fallback_audio.m4a")
                         )
                         
                         print(f"Video saved as: {output_file} (simplified version)")
+                        
+                        # Clean up
                         base_clip.close()
                         full_audio.close()
                 except Exception as e:
@@ -574,7 +648,30 @@ def create_debate_video():
         pool.close()
         pool.join()
         
-        print("Cleaning up...")
+        print("Cleaning up temporary files...")
+        
+        # Clean up all remaining temporary files
+        try:
+            for filename in os.listdir(temp_frames_dir):
+                file_path = os.path.join(temp_frames_dir, filename)
+                try:
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                except Exception as e:
+                    print(f"Error deleting {file_path}: {e}")
+            
+            # Clean MoviePy temp directory
+            if os.path.exists(PROJECT_TEMP_DIR):
+                try:
+                    for filename in os.listdir(PROJECT_TEMP_DIR):
+                        file_path = os.path.join(PROJECT_TEMP_DIR, filename)
+                        if os.path.isfile(file_path):
+                            os.unlink(file_path)
+                except Exception as e:
+                    print(f"Error cleaning up temp files: {e}")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        
         # Force garbage collection
         gc.collect()
 
