@@ -3,7 +3,7 @@ import os
 import asyncio
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 from debate_to_speech import (
-    process_debate, text_to_speech, 
+    process_debate, text_to_speech, get_voice_for_speaker,
     VOICE_NARRATOR, VOICE_JANE, VOICE_VALENTINO, VOICE_BACKUP,
     clear_output_folder, verify_audio_file, split_long_text
 )
@@ -171,6 +171,114 @@ async def test_text_to_speech_different_voices(mock_makedirs):
         await text_to_speech("Test Valentino", VOICE_VALENTINO, "test_dir/test_valentino.mp3")
         call_args = mock_tts.call_args[1]
         assert call_args['voice'] == VOICE_VALENTINO
+
+def test_get_voice_for_speaker():
+    """Test voice selection for different speakers."""
+    assert get_voice_for_speaker("Jane") == "alloy"
+    assert get_voice_for_speaker("Valentino") == "echo"
+    assert get_voice_for_speaker("Narrator") == "nova"
+    assert get_voice_for_speaker("Ground") == "onyx"
+    assert get_voice_for_speaker("Result") == "onyx"
+
+@pytest.mark.asyncio
+@patch('os.makedirs')
+@patch('openai.OpenAI')
+async def test_openai_tts_integration(mock_openai, mock_makedirs):
+    """Test OpenAI TTS integration."""
+    mock_client = Mock()
+    mock_response = Mock()
+    mock_client.audio.speech.create.return_value = mock_response
+    mock_openai.return_value = mock_client
+    
+    # Create a mock environment with OpenAI API key
+    with patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'}):
+        await process_debate()
+        
+        # Verify OpenAI TTS was called with correct parameters
+        calls = mock_client.audio.speech.create.call_args_list
+        for call in calls:
+            args, kwargs = call
+            assert kwargs['model'] == 'tts-1'
+            assert 'voice' in kwargs
+            assert 'input' in kwargs
+
+@pytest.mark.asyncio
+async def test_process_debate_with_narrator():
+    """Test processing debate file with narrator section."""
+    # Create temporary debate.txt with narrator
+    debate_content = """Narrator: Welcome to our AI debate.
+Ground Statement: Test statement.
+AI Debater 1: First response.
+AI Debater 2: Second response."""
+    
+    os.makedirs('outputs', exist_ok=True)
+    with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
+        f.write(debate_content)
+    
+    # Mock OpenAI client and audio processing
+    mock_client = Mock()
+    mock_response = Mock()
+    mock_response.write_to_file = Mock()
+    mock_client.audio.speech.create.return_value = mock_response
+    
+    with patch('openai.OpenAI', return_value=mock_client), \
+         patch('pydub.AudioSegment.from_mp3'), \
+         patch('pydub.AudioSegment.export'):
+        await process_debate()
+        
+        # Verify narrator voice was used for first segment
+        first_call = mock_client.audio.speech.create.call_args_list[0]
+        assert first_call[1]['voice'] == 'nova'  # Narrator voice
+        
+        # Verify each segment was processed
+        assert mock_client.audio.speech.create.call_count == 4  # Narrator + Ground + 2 debaters
+
+@pytest.mark.asyncio
+async def test_audio_combination_with_pauses():
+    """Test that audio segments are combined with appropriate pauses."""
+    mock_segment = MagicMock()
+    mock_segment.__add__.return_value = mock_segment
+    mock_segment.__len__.return_value = 5000  # 5 seconds
+    
+    with patch('pydub.AudioSegment') as mock_audio:
+        mock_audio.from_mp3.return_value = mock_segment
+        mock_audio.empty.return_value = mock_segment
+        mock_audio.silent.return_value = mock_segment
+        
+        # Create some test files
+        os.makedirs('outputs/audio_output', exist_ok=True)
+        test_files = ['test1.mp3', 'test2.mp3']
+        for file in test_files:
+            with open(f'outputs/audio_output/{file}', 'wb') as f:
+                f.write(b'test')
+        
+        # Test the combination
+        from debate_to_speech import combine_audio_files
+        combine_audio_files([f'outputs/audio_output/{f}' for f in test_files])
+        
+        # Verify silent pauses were added
+        assert mock_audio.silent.called
+        assert mock_segment.export.called
+
+@pytest.mark.asyncio
+async def test_error_handling_in_tts():
+    """Test error handling in text-to-speech processing."""
+    with patch('openai.OpenAI') as mock_openai:
+        mock_client = Mock()
+        mock_client.audio.speech.create.side_effect = Exception("API Error")
+        mock_openai.return_value = mock_client
+        
+        # Create test debate file
+        os.makedirs('outputs', exist_ok=True)
+        with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
+            f.write("Ground Statement: Test\nAI Debater 1: Test response")
+        
+        # Process should continue despite errors
+        await process_debate()
+        
+        # Verify error handling
+        mock_client.audio.speech.create.assert_called()
+        # Process should attempt to create audio for each segment despite errors
 
 @pytest.mark.asyncio
 async def test_process_debate():

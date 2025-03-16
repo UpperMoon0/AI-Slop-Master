@@ -238,3 +238,97 @@ def test_create_debate_video(
         # Verify cleanup
         assert mock_remove.call_count == len(frame_paths)
         mock_rmdir.assert_called_once_with("temp_frames")
+
+def test_parse_debate_file_with_narrator():
+    """Test parsing debate file with narrator introduction."""
+    mock_lines = [
+        "Narrator: Welcome to our AI debate. In this video, two AI debaters will engage...",
+        "Ground Statement: AI is beneficial for humanity.",
+        "AI Debater 1: First response",
+        "AI Debater 2: Second response"
+    ]
+    
+    with patch('builtins.open', mock_open(read_data="\n".join(mock_lines))):
+        segments = parse_debate_file()
+        
+        assert len(segments) == 4
+        assert segments[0]["speaker"] == "Narrator"
+        assert "Welcome to our AI debate" in segments[0]["text"]
+        assert segments[1]["speaker"] == "Ground"
+
+@patch('cv2.imread')
+@patch('cv2.imwrite')
+@patch('PIL.Image.fromarray')
+@patch('PIL.ImageDraw.Draw')
+def test_create_frame_narrator(mock_draw, mock_fromarray, mock_imwrite, mock_imread):
+    """Test frame creation for narrator text."""
+    # Setup mocks
+    mock_frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
+    mock_pil_image = MagicMock()
+    mock_draw_obj = MagicMock()
+    mock_fromarray.return_value = mock_pil_image
+    mock_draw.return_value = mock_draw_obj
+    
+    # Create a mock font
+    class MockFont:
+        def getlength(self, text):
+            return len(text) * 10
+        def getsize(self, text):
+            return (len(text) * 10, 30)
+        def getbbox(self, text):
+            width = len(text) * 10
+            return (0, 0, width, 30)
+    
+    mock_font = MockFont()
+    
+    with patch('PIL.ImageFont.truetype', return_value=mock_font):
+        # Test narrator frame creation
+        frame = create_frame(
+            speaker="Narrator",
+            text="Welcome to our AI debate",
+            highlighted=False,
+            current_time=0,
+            total_duration=5.0
+        )
+        
+        # Verify frame was created
+        assert frame is not None
+        assert isinstance(frame, np.ndarray)
+        assert frame.shape == (VIDEO_HEIGHT, VIDEO_WIDTH, 3)
+
+def test_split_text_into_chunks():
+    """Test text chunking functionality."""
+    # Test short text
+    short_text = "This is a short text"
+    chunks = split_text_into_chunks(short_text, chunk_size=5)
+    assert len(chunks) == 1
+    assert chunks[0] == short_text
+    
+    # Test long text
+    long_text = "This is a much longer text that should be split into multiple chunks for better readability"
+    chunks = split_text_into_chunks(long_text, chunk_size=5)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        words = chunk.split()
+        assert len(words) <= 5
+
+def test_create_frame_with_different_timings():
+    """Test frame creation with different timing positions."""
+    text = "This is a long text that should be split into multiple chunks"
+    duration = 10.0
+    
+    with patch('cv2.imread'), patch('cv2.imwrite'), \
+         patch('PIL.Image.fromarray'), patch('PIL.ImageDraw.Draw'):
+        
+        # Test frame at start
+        frame1 = create_frame("Jane", text, True, current_time=0, total_duration=duration)
+        
+        # Test frame at middle
+        frame2 = create_frame("Jane", text, True, current_time=5.0, total_duration=duration)
+        
+        # Test frame at end
+        frame3 = create_frame("Jane", text, True, current_time=9.9, total_duration=duration)
+        
+        assert frame1 is not None
+        assert frame2 is not None
+        assert frame3 is not None

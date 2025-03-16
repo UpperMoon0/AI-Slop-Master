@@ -258,3 +258,159 @@ def test_existing_debate_file_for_video(mock_exists, mock_create_video, mock_pro
     # Verify both audio and video generation were called
     mock_asyncio_run.assert_called_once()
     mock_create_video.assert_called_once()
+
+def test_generate_debate_with_narrator():
+    """Test that generate_debate includes narrator introduction."""
+    debater = AIDebater()
+    debater.ground_statement = "Test statement"
+    
+    debate_text = debater.generate_debate()
+    
+    assert "Narrator: Welcome to our AI debate" in debate_text
+    assert "surrender" in debate_text.lower()
+    assert "ground statement" in debate_text.lower()
+
+@patch('openai.OpenAI')
+def test_debate_alternating_speakers(mock_openai, debater):
+    """Test that debaters take turns properly."""
+    mock_client = Mock()
+    responses = [
+        Mock(choices=[Mock(message=Mock(content="First response"))]),
+        Mock(choices=[Mock(message=Mock(content="Second response"))]),
+        Mock(choices=[Mock(message=Mock(content="Third response"))]),
+        Mock(choices=[Mock(message=Mock(content="surrender"))])
+    ]
+    mock_client.chat.completions.create.side_effect = responses
+    mock_openai.return_value = mock_client
+    
+    with patch('builtins.open', MagicMock()):
+        results = debater.debate("Test statement", generate_audio=False, jane_first=True)
+        
+        # Check that speakers alternated correctly
+        calls = mock_client.chat.completions.create.call_args_list
+        for i, call in enumerate(calls):
+            prompt = call[1]['messages'][0]['content']
+            if i % 2 == 0:
+                assert "Jane" in prompt
+            else:
+                assert "Valentino" in prompt
+
+@patch('openai.OpenAI')
+def test_debate_surrender_mechanic(mock_openai, debater):
+    """Test that surrender mechanic works properly."""
+    mock_client = Mock()
+    responses = [
+        Mock(choices=[Mock(message=Mock(content="Strong argument"))]),
+        Mock(choices=[Mock(message=Mock(content="I surrender"))])
+    ]
+    mock_client.chat.completions.create.side_effect = responses
+    mock_openai.return_value = mock_client
+    
+    with patch('builtins.open', MagicMock()):
+        results = debater.debate("Test statement", generate_audio=False)
+        
+        # Check that debate ended after surrender
+        assert len(results) == 3  # Ground statement + argument + surrender
+        assert "surrender" in results[-1].lower()
+
+@patch('openai.OpenAI')
+def test_debate_round_limit(mock_openai, debater):
+    """Test that debate has a maximum round limit."""
+    mock_client = Mock()
+    # Generate 51 non-surrender responses
+    responses = [Mock(choices=[Mock(message=Mock(content=f"Response {i}"))]) for i in range(51)]
+    mock_client.chat.completions.create.side_effect = responses
+    mock_openai.return_value = mock_client
+    
+    with patch('builtins.open', MagicMock()):
+        results = debater.debate("Test statement", generate_audio=False)
+        
+        # Check that debate ended after 50 rounds
+        assert mock_client.chat.completions.create.call_count <= 100  # 50 rounds * 2 speakers
+        assert any("draw" in str(r).lower() for r in results)
+
+@patch('openai.OpenAI')
+def test_debate_speaker_order(mock_openai, debater):
+    """Test that speaker order can be controlled."""
+    mock_client = Mock()
+    responses = [
+        Mock(choices=[Mock(message=Mock(content="First response"))]),
+        Mock(choices=[Mock(message=Mock(content="surrender"))])
+    ]
+    mock_client.chat.completions.create.side_effect = responses
+    mock_openai.return_value = mock_client
+    
+    # Test with Jane first
+    with patch('builtins.open', MagicMock()):
+        results_jane_first = debater.debate("Test", generate_audio=False, jane_first=True)
+        first_call = mock_client.chat.completions.create.call_args_list[0]
+        assert "Jane" in first_call[1]['messages'][0]['content']
+    
+    mock_client.chat.completions.create.reset_mock()
+    
+    # Test with Valentino first
+    with patch('builtins.open', MagicMock()):
+        results_valentino_first = debater.debate("Test", generate_audio=False, jane_first=False)
+        first_call = mock_client.chat.completions.create.call_args_list[0]
+        assert "Valentino" in first_call[1]['messages'][0]['content']
+
+@patch('openai.OpenAI')
+def test_surrender_detection(mock_openai, debater):
+    """Test different forms of surrender detection."""
+    mock_client = Mock()
+    surrender_phrases = [
+        "surrender",
+        "I give up",
+        "you win",
+        "i concede",
+        "i surrender"
+    ]
+    
+    for phrase in surrender_phrases:
+        mock_client.chat.completions.create.return_value = Mock(
+            choices=[Mock(message=Mock(content=phrase))])
+        mock_openai.return_value = mock_client
+        
+        response = debater.generate_response("test prompt", "Jane")
+        assert response == "surrender"  # Should normalize to just "surrender"
+
+@patch('openai.OpenAI')
+def test_debate_with_existing_file(mock_openai, debater):
+    """Test using an existing debate file."""
+    debate_content = """Narrator: Welcome to our AI debate.
+Ground Statement: Test statement.
+AI Debater 1: First response.
+AI Debater 2: Second response."""
+    
+    # Create test debate.txt
+    os.makedirs('outputs', exist_ok=True)
+    with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
+        f.write(debate_content)
+    
+    with patch('ai_debate.process_debate') as mock_process, \
+         patch('ai_debate.create_debate_video') as mock_video:
+        results = debater.debate("", use_existing=True, generate_audio=True)
+        
+        assert len(results) == 4  # All lines from file
+        assert mock_process.called  # Audio processing occurred
+        assert mock_video.called  # Video generation occurred
+    
+    # Clean up
+    os.remove('outputs/debate.txt')
+
+def test_debate_history_similarity_check():
+    """Test the similarity check for debate arguments."""
+    debater = AIDebater()
+    
+    # Test similar arguments
+    text1 = "AI will improve productivity and efficiency in the workplace"
+    text2 = "Artificial Intelligence improves workplace productivity and efficiency"
+    assert debater._check_similarity(text1, text2) == True
+    
+    # Test different arguments
+    text3 = "AI raises important ethical concerns about privacy"
+    assert debater._check_similarity(text1, text3) == False
+    
+    # Test with empty or invalid input
+    assert debater._check_similarity("", "") == False
+    assert debater._check_similarity(text1, "") == False

@@ -168,9 +168,8 @@ class AIDebater:
         self.ground_statement = ground_statement
         self.debate_history.clear()
         
-        # Open debate.txt file to write the debate
-        with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
-            f.write(f"Ground Statement: {ground_statement}\n")
+        # Add narrator introduction and ground statement
+        self.generate_debate()
         
         round_num = 0
         surrender_occurred = False
@@ -248,8 +247,21 @@ class AIDebater:
         full_history = [ground_statement] + list(self.debate_history)
         return full_history
 
+    def generate_debate(self):
+        # Add narrator introduction with surrender mechanic explanation
+        debate_text = "Narrator: Welcome to our AI debate. In this video, two AI debaters will engage in a structured discussion based on a ground statement. Each debater will present their arguments, taking turns to speak. They will analyze the topic from different perspectives, aiming to provide insightful and balanced viewpoints. If at any point a debater finds their position difficult to defend or recognizes the strength of their opponent's arguments, they may choose to surrender, acknowledging the validity of the opposing viewpoint. Let's begin with our ground statement.\n\n"
+        
+        # Add ground statement
+        debate_text += f"Ground Statement: {self.ground_statement}\n\n"
+        
+        # Write debate to file
+        with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
+            f.write(debate_text)
+        
+        return debate_text
+
 if __name__ == "__main__":
     debater = AIDebater()
     ground_statement = "AI-generated art is soulless and takes away jobs from artists; therefore, it should not exist."
     # Set jane_first=False to have Valentino start the debate
-    debate_results = debater.debate(ground_statement, use_existing=False, jane_first=False)  # Valentino goes first
+    debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)  # Valentino goes first
