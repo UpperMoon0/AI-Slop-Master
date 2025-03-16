@@ -13,10 +13,10 @@ mpconfig.change_settings({"TEMP_DIR": PROJECT_TEMP_DIR})
 VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 720
 FPS = 30  # Updated from 24 to 30
-BACKGROUND_COLOR = (240, 240, 240)
-HIGHLIGHT_COLOR = (255, 223, 0)
-TEXT_COLOR = (0, 0, 0)
-GROUND_STATEMENT_COLOR = (40, 40, 40)
+BACKGROUND_COLOR = (240, 240, 240)  # RGB format
+HIGHLIGHT_COLOR = (0, 223, 255)  # Use BGR format (255, 223, 0) in RGB for yellow highlighting
+TEXT_COLOR = (0, 0, 0)  # RGB format
+GROUND_STATEMENT_COLOR = (40, 40, 40)  # RGB format
 
 # Cache fonts
 try:
