@@ -214,5 +214,4 @@ class AIDebater:
 if __name__ == "__main__":
     debater = AIDebater()
     ground_statement = "AI-generated art is soulless and takes away jobs from artists; therefore, it should not exist."
-    # Set jane_first=False to have Valentino start the debate
-    debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)  # Valentino goes first
+    debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)  
