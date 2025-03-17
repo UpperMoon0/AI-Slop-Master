@@ -217,6 +217,10 @@ def parse_debate_file():
             if not line:
                 continue
                 
+            # Skip Display Summary line - it should only be displayed, not spoken
+            if line.startswith("Display Summary:"):
+                continue
+                
             # Check for speaker patterns
             if line.startswith("Ground Statement:") or line.startswith("Result:"):
                 # Complete previous speaker's text

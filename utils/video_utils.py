@@ -8,13 +8,15 @@ from config import JANE_AVATAR, VALENTINO_AVATAR, TEXT_FONT, NAME_FONT
 from utils.text_utils import wrap_text, get_font_metrics
 from utils.audio_utils import get_current_subtitle
 
-# Track ground statement mode and text
-_is_ground_statement_active = False
+# Track debate state and text content
+_narrator_state = "preDebate"  # "preDebate", "debate", "postDebate"
 _ground_statement_text = ""
+_ground_statement_summary = ""
+_has_seen_first_debater = False  # Flag to track if we've seen the first debater
 
 def create_frame(speaker, text, highlighted=False, current_time=0, total_duration=5.0, timing_segments=None):
     """Create a video frame with speakers and text."""
-    global _is_ground_statement_active, _ground_statement_text
+    global _narrator_state, _ground_statement_text, _ground_statement_summary, _has_seen_first_debater
     
     # Create blank frame - using BGR format for consistency with OpenCV
     frame = np.ones((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8) * 240
@@ -22,19 +24,26 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
     # Get current subtitle text and the actual speaker from timing
     current_subtitle, current_speaker = get_current_subtitle(timing_segments, current_time, text)
     
-    # Check if we're entering or exiting ground statement mode and store ground statement
-    if current_subtitle and "Ground Statement:" in current_subtitle:
-        _is_ground_statement_active = True
-        _ground_statement_text = current_subtitle
-    elif current_subtitle and "Result:" in current_subtitle:
-        _is_ground_statement_active = False
-        _ground_statement_text = ""
+    # Update state and text based on current subtitle content
+    if current_subtitle:
+        if "Ground Statement:" in current_subtitle:
+            _narrator_state = "preDebate"
+            _ground_statement_text = current_subtitle
+            _has_seen_first_debater = False  # Reset this flag when we see ground statement
+        elif "Display Summary:" in current_subtitle:
+            _ground_statement_summary = current_subtitle.replace("Display Summary:", "Topic:").strip()
+        elif "Result:" in current_subtitle:
+            _narrator_state = "postDebate"
+        # Check for AI Debater and update state
+        elif ("AI Debater" in current_subtitle or speaker in ["Jane", "Valentino"]) and _narrator_state == "preDebate":
+            # When first debater starts speaking, transition to debate state
+            _has_seen_first_debater = True
+            _narrator_state = "debate"
     
     # Use the detected speaker from timing if available, otherwise use the provided speaker
     active_speaker = current_speaker if current_speaker else speaker
     
-    # Only highlight if there's actual subtitle text to display AND
-    # the current speaker is one of the debaters (not the narrator)
+    # Only highlight if there's actual subtitle text to display AND speaker is a debater
     should_highlight = bool(current_subtitle) and active_speaker in ["Jane", "Valentino"]
     
     # For all cases (including narrator), show the avatars but only highlight active debater
@@ -91,17 +100,30 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
         draw.text((jane_name_x, jane_name_y), "Jane", fill=TEXT_COLOR, font=NAME_FONT)
         draw.text((valentino_name_x, valentino_name_y), "Valentino", fill=TEXT_COLOR, font=NAME_FONT)
         
-        # If ground statement is active, always display it at the top
-        if _is_ground_statement_active and _ground_statement_text:
-            # Make ground statement shorter for display during debate
-            display_text = _ground_statement_text
-            if len(display_text) > 60 and "Ground Statement:" in display_text:
-                # Keep only the statement part, not the "Ground Statement:" prefix
-                display_text = display_text.replace("Ground Statement:", "Topic:").strip()
-            
-            # Wrap the ground statement text
+        # TOP TEXT CONTAINER - For ground statement summary during debate or narrator text otherwise
+        top_text = None
+        
+        # During debate, always show the summary if available
+        if _narrator_state == "debate" and _ground_statement_summary:
+            top_text = _ground_statement_summary
+        # During pre debate, show the narrator's text, including introduction and ground statement
+        elif _narrator_state == "preDebate":
+            if speaker == "Narrator" and current_subtitle:
+                # Skip "Display Summary:" as it's not meant to be spoken
+                if not "Display Summary:" in current_subtitle:
+                    # Show whatever the narrator is currently saying during preDebate
+                    top_text = current_subtitle
+            elif _ground_statement_text and not speaker == "Narrator":
+                # For non-narrator speakers in preDebate, show the full ground statement
+                top_text = _ground_statement_text
+        # During post debate, show the result
+        elif _narrator_state == "postDebate" and current_subtitle and "Result:" in current_subtitle:
+            top_text = current_subtitle
+        
+        # Draw top text if we have content
+        if top_text:
             max_width = VIDEO_WIDTH - 300
-            wrapped_lines = wrap_text(display_text, TEXT_FONT, max_width)
+            wrapped_lines = wrap_text(top_text, TEXT_FONT, max_width)
             
             # Calculate total height of text block
             _, line_height = get_font_metrics(TEXT_FONT, "Tg")
@@ -117,7 +139,7 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
                 text_width, _ = get_font_metrics(TEXT_FONT, line)
                 text_x = (VIDEO_WIDTH - text_width) // 2
                 
-                # Draw text with a semi-transparent background for better readability
+                # Add background for text at the top (always)
                 text_bg_padding = 10
                 text_bg = (220, 220, 220, 180)  # Light gray with some transparency
                 
@@ -128,65 +150,34 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
                     fill=text_bg
                 )
                 
+                # Draw the text
                 draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
                 text_y += line_height + line_spacing
         
-        # For subtitle text - show only if we have subtitle content
-        if current_subtitle:
-            # For narrator, position text at the TOP of the screen
-            if speaker == "Narrator":
-                # Skip if this is the ground statement and it's already displayed
-                if _is_ground_statement_active and "Ground Statement:" in current_subtitle:
-                    pass  # Skip duplicate display
-                else:
-                    # Position text at the TOP of the screen (below ground statement if present)
-                    max_width = VIDEO_WIDTH - 300
-                    wrapped_lines = wrap_text(current_subtitle, TEXT_FONT, max_width)
-                    
-                    # Calculate total height of text block
-                    _, line_height = get_font_metrics(TEXT_FONT, "Tg")
-                    line_spacing = 10
-                    total_height = len(wrapped_lines) * (line_height + line_spacing)
-                    
-                    # Position text at the top with padding - add extra space if ground statement is showing
-                    top_padding = 40
-                    if _is_ground_statement_active and _ground_statement_text:
-                        # Roughly estimate ground statement height to position narrator text below it
-                        gs_lines = max(1, min(3, len(_ground_statement_text) // 40))  # Estimate number of lines
-                        top_padding += gs_lines * (line_height + line_spacing) + 20
-                    
-                    text_y = top_padding
-                    
-                    # Draw each line centered horizontally
-                    for line in wrapped_lines:
-                        text_width, _ = get_font_metrics(TEXT_FONT, line)
-                        text_x = (VIDEO_WIDTH - text_width) // 2
-                        
-                        draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
-                        text_y += line_height + line_spacing
-            else:
-                # For debater subtitles - position at the bottom
-                max_width = VIDEO_WIDTH - 100  # Leave 50px padding on each side
-                wrapped_lines = wrap_text(current_subtitle, TEXT_FONT, max_width)
+        # BOTTOM TEXT CONTAINER - For debater subtitles
+        if current_subtitle and speaker in ["Jane", "Valentino"]:
+            # For debater subtitles - always position at the bottom
+            max_width = VIDEO_WIDTH - 100  # Leave 50px padding on each side
+            wrapped_lines = wrap_text(current_subtitle, TEXT_FONT, max_width)
+            
+            # Calculate total height of text block
+            _, line_height = get_font_metrics(TEXT_FONT, "Tg")
+            line_spacing = 10
+            total_height = len(wrapped_lines) * (line_height + line_spacing)
+            
+            # Start position for first line - moved lower (closer to bottom)
+            subtitle_vertical_offset = 80  # Move subtitles down (higher value = lower position)
+            text_y = VIDEO_HEIGHT - subtitle_vertical_offset - total_height
+            
+            # Draw each line centered horizontally
+            for line in wrapped_lines:
+                text_width, _ = get_font_metrics(TEXT_FONT, line)
+                text_x = (VIDEO_WIDTH - text_width) // 2
                 
-                # Calculate total height of text block
-                _, line_height = get_font_metrics(TEXT_FONT, "Tg")
-                line_spacing = 10
-                total_height = len(wrapped_lines) * (line_height + line_spacing)
+                # Draw text directly without background or shadow
+                draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
                 
-                # Start position for first line - moved lower (closer to bottom)
-                subtitle_vertical_offset = 80  # Move subtitles down (higher value = lower position)
-                text_y = VIDEO_HEIGHT - subtitle_vertical_offset - total_height
-                
-                # Draw each line centered horizontally
-                for line in wrapped_lines:
-                    text_width, _ = get_font_metrics(TEXT_FONT, line)
-                    text_x = (VIDEO_WIDTH - text_width) // 2
-                    
-                    # Draw text directly without background or shadow
-                    draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
-                    
-                    text_y += line_height + line_spacing
+                text_y += line_height + line_spacing
         
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)  # Convert back to BGR for OpenCV
     finally:

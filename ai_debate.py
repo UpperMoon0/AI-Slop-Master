@@ -10,12 +10,13 @@ from debate_to_video import create_debate_video
 load_dotenv()
 
 class AIDebater:
-    MAX_HISTORY = 20  # Store max 20 arguments (10 pairs)
+    MAX_HISTORY = 10  # Store max 10 messages (5 pairs of exchanges)
     
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.debate_history = deque(maxlen=self.MAX_HISTORY)
         self.ground_statement = None
+        self.ground_statement_summary = None
         self.current_speaker_number = 1
 
     def get_ai_personality(self, ai_role: str) -> str:
@@ -98,6 +99,31 @@ class AIDebater:
         jaccard_similarity = intersection / union if union > 0 else 0
         return jaccard_similarity > 0.25
 
+    def summarize_ground_statement(self, ground_statement: str) -> str:
+        """Generate a concise summary of the ground statement for display during debates."""
+        prompt = f"""Summarize the following ground statement into a single concise sentence 
+        (maximum 60 characters) that captures its essence. Make it suitable for display as 
+        a debate topic title:
+
+        {ground_statement}"""
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that creates concise summaries."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=60
+        )
+        
+        summary = response.choices[0].message.content.strip()
+        # Remove any quotes that might be included in the response
+        summary = summary.replace('"', '').replace("'", "")
+        return summary
+    
     def debate(self, ground_statement: str, generate_audio: bool = True, use_existing: bool = False, jane_first: bool = True) -> List[str]:
         if use_existing:
             print("Using existing debate.txt file for audio generation...")
@@ -113,6 +139,11 @@ class AIDebater:
 
         print(f"Ground Statement: {ground_statement}\n")
         self.ground_statement = ground_statement
+        
+        # Generate a concise summary of the ground statement for display
+        self.ground_statement_summary = self.summarize_ground_statement(ground_statement)
+        print(f"Display Summary: {self.ground_statement_summary}\n")
+        
         self.debate_history.clear()
         
         # Generate debate.txt file with initial content
@@ -134,8 +165,10 @@ class AIDebater:
             first_prompt = f"Counter this argument: {previous}. Be concise."
             
             # Add hint about surrendering as rounds progress
-            if round_num >= 3:
+            if round_num >= 3 and round_num < 10:
                 first_prompt += " If their point seems too strong to counter effectively, consider surrendering."
+            elif round_num >= 10:
+                first_prompt += " We are at round {round_num} now. The debate has gone on for a long time. SERIOUSLY consider surrendering if you don't have strong counterarguments. There is no shame in acknowledging a strong opposing viewpoint."
                 
             first_response = self.generate_response(first_prompt, first_debater)
             print(f"\n{first_debater}: {first_response}")
@@ -159,8 +192,10 @@ class AIDebater:
             second_prompt = f"Counter this argument: {first_response}. Be concise."
             
             # Add hint about surrendering as rounds progress
-            if round_num >= 3:
+            if round_num >= 3 and round_num < 10:
                 second_prompt += " If their point seems too strong to counter effectively, consider surrendering."
+            elif round_num >= 10:
+                second_prompt += " We are at round {round_num} now. The debate has gone on for a long time. SERIOUSLY consider surrendering if you don't have strong counterarguments. There is no shame in acknowledging a strong opposing viewpoint."
                 
             second_response = self.generate_response(second_prompt, second_debater)
             print(f"\n{second_debater}: {second_response}")
@@ -205,6 +240,10 @@ class AIDebater:
         # Add ground statement
         debate_text += f"Ground Statement: {self.ground_statement}\n\n"
         
+        # Add the summarized ground statement for display during the debate
+        if self.ground_statement_summary:
+            debate_text += f"Display Summary: {self.ground_statement_summary}\n\n"
+        
         # Write debate to file
         with open('outputs/debate.txt', 'w', encoding='utf-8') as f:
             f.write(debate_text)
@@ -214,4 +253,4 @@ class AIDebater:
 if __name__ == "__main__":
     debater = AIDebater()
     ground_statement = "AI-generated art is soulless and takes away jobs from artists; therefore, it should not exist."
-    debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)  
+    debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)
