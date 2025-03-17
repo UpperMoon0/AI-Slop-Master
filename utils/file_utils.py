@@ -1,4 +1,6 @@
 import os
+import time
+import shutil
 
 def parse_debate_file():
     """Parse debate.txt file to get dialogue segments and speakers."""
@@ -73,6 +75,9 @@ def cleanup_temp_files(temp_frames_dir, project_temp_dir):
     """Clean up all temporary files after video creation."""
     print("Cleaning up temporary files...")
     
+    # Allow a short delay to ensure files are fully released
+    time.sleep(1)
+    
     try:
         # Clean up frames directory
         if os.path.exists(temp_frames_dir):
@@ -80,9 +85,18 @@ def cleanup_temp_files(temp_frames_dir, project_temp_dir):
                 file_path = os.path.join(temp_frames_dir, filename)
                 try:
                     if os.path.isfile(file_path):
-                        os.unlink(file_path)
+                        # Try with multiple retries for locked files
+                        delete_with_retry(file_path)
                 except Exception as e:
                     print(f"Error deleting {file_path}: {e}")
+            
+            # Try to remove the directory itself if empty
+            try:
+                # Just in case there are any leftover files, attempt to remove the whole directory
+                if not os.listdir(temp_frames_dir):
+                    os.rmdir(temp_frames_dir)
+            except Exception as e:
+                print(f"Could not remove temp directory {temp_frames_dir}: {e}")
         
         # Clean MoviePy temp directory
         if os.path.exists(project_temp_dir):
@@ -90,8 +104,25 @@ def cleanup_temp_files(temp_frames_dir, project_temp_dir):
                 file_path = os.path.join(project_temp_dir, filename)
                 if os.path.isfile(file_path):
                     try:
-                        os.unlink(file_path)
+                        delete_with_retry(file_path)
                     except Exception as e:
                         print(f"Error cleaning temp file {file_path}: {e}")
     except Exception as e:
         print(f"Error during cleanup: {e}")
+
+def delete_with_retry(file_path, max_attempts=3, delay=1):
+    """Try to delete a file with multiple retries if it's locked."""
+    for attempt in range(max_attempts):
+        try:
+            os.unlink(file_path)
+            return True
+        except PermissionError:
+            if attempt < max_attempts - 1:
+                time.sleep(delay)
+                continue
+            else:
+                print(f"File {file_path} is locked, will be removed on next run.")
+                return False
+        except Exception as e:
+            print(f"Error removing {file_path}: {e}")
+            return False

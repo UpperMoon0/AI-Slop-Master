@@ -2,11 +2,35 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 import gc
+import os
+import multiprocessing as mp
+from moviepy.editor import AudioFileClip, ImageSequenceClip, VideoFileClip, concatenate_videoclips
 
 from config import VIDEO_WIDTH, VIDEO_HEIGHT, TEXT_COLOR, HIGHLIGHT_COLOR
 from config import JANE_AVATAR, VALENTINO_AVATAR, TEXT_FONT, NAME_FONT
+from config import FPS, TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
 from utils.text_utils import wrap_text, get_font_metrics
-from utils.audio_utils import get_current_subtitle
+from utils.audio_utils import get_current_subtitle, get_segment_duration, get_segment_timing
+from video.text import Text
+from video.avatar import Avatar
+
+# Text containers for top and bottom text
+_top_text = Text(position="top", background=True)
+_bottom_text = Text(position="bottom", background=False)
+
+# Create avatar instances
+# Move avatars up by 50 pixels
+avatar_vertical_offset = 50
+jane_pos = (100, (VIDEO_HEIGHT - 250 - 50) // 2 - avatar_vertical_offset)
+valentino_pos = (VIDEO_WIDTH - 250 - 100, (VIDEO_HEIGHT - 250 - 50) // 2 - avatar_vertical_offset)
+
+_jane_avatar = None
+_valentino_avatar = None
+
+# Initialize avatars once loaded
+if JANE_AVATAR is not None and VALENTINO_AVATAR is not None:
+    _jane_avatar = Avatar(JANE_AVATAR, "Jane", jane_pos)
+    _valentino_avatar = Avatar(VALENTINO_AVATAR, "Valentino", valentino_pos)
 
 # Track debate state and text content
 _narrator_state = "preDebate"  # "preDebate", "debate", "postDebate"
@@ -17,6 +41,7 @@ _has_seen_first_debater = False  # Flag to track if we've seen the first debater
 def create_frame(speaker, text, highlighted=False, current_time=0, total_duration=5.0, timing_segments=None):
     """Create a video frame with speakers and text."""
     global _narrator_state, _ground_statement_text, _ground_statement_summary, _has_seen_first_debater
+    global _top_text, _bottom_text, _jane_avatar, _valentino_avatar
     
     # Create blank frame - using BGR format for consistency with OpenCV
     frame = np.ones((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8) * 240
@@ -46,40 +71,15 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
     # Only highlight if there's actual subtitle text to display AND speaker is a debater
     should_highlight = bool(current_subtitle) and active_speaker in ["Jane", "Valentino"]
     
-    # For all cases (including narrator), show the avatars but only highlight active debater
-    if JANE_AVATAR is not None and VALENTINO_AVATAR is not None:
-        # Move avatars up by 50 pixels
-        avatar_vertical_offset = 50
-        jane_pos = (100, (VIDEO_HEIGHT - 250 - 50) // 2 - avatar_vertical_offset)
-        valentino_pos = (VIDEO_WIDTH - 250 - 100, (VIDEO_HEIGHT - 250 - 50) // 2 - avatar_vertical_offset)
+    # For all cases, show the avatars but only highlight active debater
+    if _jane_avatar and _valentino_avatar:
+        # Update highlight status based on active speaker
+        _jane_avatar.set_highlight(should_highlight and active_speaker == "Jane" and speaker != "Narrator")
+        _valentino_avatar.set_highlight(should_highlight and active_speaker == "Valentino" and speaker != "Narrator")
         
-        # Draw avatars on frame - OpenCV uses BGR format
-        frame[jane_pos[1]:jane_pos[1]+250, jane_pos[0]:jane_pos[0]+250] = JANE_AVATAR
-        frame[valentino_pos[1]:valentino_pos[1]+250, valentino_pos[0]:valentino_pos[0]+250] = VALENTINO_AVATAR
-        
-        # Add highlight effect ONLY when a debater is actively speaking
-        # Never highlight during narrator sections
-        if should_highlight and speaker != "Narrator":
-            highlight_thickness = 10
-            # Fix the highlight color - HIGHLIGHT_COLOR is likely defined as RGB but OpenCV expects BGR
-            highlight_color_bgr = (HIGHLIGHT_COLOR[2], HIGHLIGHT_COLOR[1], HIGHLIGHT_COLOR[0])
-            
-            if active_speaker == "Jane":
-                cv2.rectangle(
-                    frame,
-                    (jane_pos[0]-highlight_thickness, jane_pos[1]-highlight_thickness),
-                    (jane_pos[0]+250+highlight_thickness, jane_pos[1]+250+highlight_thickness),
-                    highlight_color_bgr,  # Use BGR order for OpenCV
-                    highlight_thickness
-                )
-            elif active_speaker == "Valentino":
-                cv2.rectangle(
-                    frame,
-                    (valentino_pos[0]-highlight_thickness, valentino_pos[1]-highlight_thickness),
-                    (valentino_pos[0]+250+highlight_thickness, valentino_pos[1]+250+highlight_thickness),
-                    highlight_color_bgr,  # Use BGR order for OpenCV
-                    highlight_thickness
-                )
+        # Draw avatars on frame
+        _jane_avatar.draw_on_frame(frame)
+        _valentino_avatar.draw_on_frame(frame)
 
     # Create a PIL Image for text rendering - convert from BGR to RGB for PIL
     pil_img = None
@@ -87,97 +87,40 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_img)
         
-        # Add names under avatars
-        jane_name_y = jane_pos[1] + 250 + 10
-        valentino_name_y = valentino_pos[1] + 250 + 10
-        
-        jane_name_width, _ = get_font_metrics(NAME_FONT, "Jane")
-        valentino_name_width, _ = get_font_metrics(NAME_FONT, "Valentino")
-        
-        jane_name_x = jane_pos[0] + (250 - jane_name_width) // 2
-        valentino_name_x = valentino_pos[0] + (250 - valentino_name_width) // 2
-        
-        draw.text((jane_name_x, jane_name_y), "Jane", fill=TEXT_COLOR, font=NAME_FONT)
-        draw.text((valentino_name_x, valentino_name_y), "Valentino", fill=TEXT_COLOR, font=NAME_FONT)
+        # Draw names under avatars
+        if _jane_avatar and _valentino_avatar:
+            _jane_avatar.draw_name(draw)
+            _valentino_avatar.draw_name(draw)
         
         # TOP TEXT CONTAINER - For ground statement summary during debate or narrator text otherwise
-        top_text = None
+        _top_text.clear()  # Clear previous content
         
         # During debate, always show the summary if available
         if _narrator_state == "debate" and _ground_statement_summary:
-            top_text = _ground_statement_summary
+            _top_text.update_text(_ground_statement_summary)
         # During pre debate, show the narrator's text, including introduction and ground statement
         elif _narrator_state == "preDebate":
             if speaker == "Narrator" and current_subtitle:
                 # Skip "Display Summary:" as it's not meant to be spoken
                 if not "Display Summary:" in current_subtitle:
                     # Show whatever the narrator is currently saying during preDebate
-                    top_text = current_subtitle
+                    _top_text.update_text(current_subtitle)
             elif _ground_statement_text and not speaker == "Narrator":
                 # For non-narrator speakers in preDebate, show the full ground statement
-                top_text = _ground_statement_text
+                _top_text.update_text(_ground_statement_text)
         # During post debate, show the result
         elif _narrator_state == "postDebate" and current_subtitle and "Result:" in current_subtitle:
-            top_text = current_subtitle
+            _top_text.update_text(current_subtitle)
         
-        # Draw top text if we have content
-        if top_text:
-            max_width = VIDEO_WIDTH - 300
-            wrapped_lines = wrap_text(top_text, TEXT_FONT, max_width)
-            
-            # Calculate total height of text block
-            _, line_height = get_font_metrics(TEXT_FONT, "Tg")
-            line_spacing = 10
-            total_height = len(wrapped_lines) * (line_height + line_spacing)
-            
-            # Position text at the top with padding
-            top_padding = 20
-            text_y = top_padding
-            
-            # Draw each line centered horizontally
-            for line in wrapped_lines:
-                text_width, _ = get_font_metrics(TEXT_FONT, line)
-                text_x = (VIDEO_WIDTH - text_width) // 2
-                
-                # Add background for text at the top (always)
-                text_bg_padding = 10
-                text_bg = (220, 220, 220, 180)  # Light gray with some transparency
-                
-                # Draw rounded rectangle background
-                draw.rectangle(
-                    [(text_x - text_bg_padding, text_y - text_bg_padding/2),
-                     (text_x + text_width + text_bg_padding, text_y + line_height + text_bg_padding/2)],
-                    fill=text_bg
-                )
-                
-                # Draw the text
-                draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
-                text_y += line_height + line_spacing
+        # Draw the top text
+        _top_text.draw(draw)
         
         # BOTTOM TEXT CONTAINER - For debater subtitles
+        _bottom_text.clear()  # Clear previous content
+        
         if current_subtitle and speaker in ["Jane", "Valentino"]:
-            # For debater subtitles - always position at the bottom
-            max_width = VIDEO_WIDTH - 100  # Leave 50px padding on each side
-            wrapped_lines = wrap_text(current_subtitle, TEXT_FONT, max_width)
-            
-            # Calculate total height of text block
-            _, line_height = get_font_metrics(TEXT_FONT, "Tg")
-            line_spacing = 10
-            total_height = len(wrapped_lines) * (line_height + line_spacing)
-            
-            # Start position for first line - moved lower (closer to bottom)
-            subtitle_vertical_offset = 80  # Move subtitles down (higher value = lower position)
-            text_y = VIDEO_HEIGHT - subtitle_vertical_offset - total_height
-            
-            # Draw each line centered horizontally
-            for line in wrapped_lines:
-                text_width, _ = get_font_metrics(TEXT_FONT, line)
-                text_x = (VIDEO_WIDTH - text_width) // 2
-                
-                # Draw text directly without background or shadow
-                draw.text((text_x, text_y), line, fill=TEXT_COLOR, font=TEXT_FONT)
-                
-                text_y += line_height + line_spacing
+            _bottom_text.update_text(current_subtitle)
+            _bottom_text.draw(draw)
         
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)  # Convert back to BGR for OpenCV
     finally:
@@ -268,3 +211,243 @@ def fix_video_duration(clip, index):
     except Exception as e:
         print(f"Error fixing clip {index} duration: {str(e)}")
         return clip
+
+def create_segment_video(segment_index, speaker, text, audio_file):
+    """Creates a video clip for a single segment."""
+    duration = max(get_segment_duration(audio_file), 3.0)
+    timing_segments = get_segment_timing(audio_file)
+    
+    # Generate frames with evenly distributed timestamps
+    frames = []
+    frames_per_second = 2  # Generate frames at 2fps for smooth subtitles
+    total_frames = max(int(duration * frames_per_second), 1)
+    time_step = duration / total_frames
+    
+    for j in range(total_frames):
+        time_point = j * time_step
+        frame = create_frame(speaker, text, True, time_point, duration, timing_segments)
+        if frame is not None:
+            frames.append(frame)
+    
+    # Create fallback frame if necessary
+    if not frames:
+        print(f"Warning: No frames created for segment {segment_index}. Creating fallback frame.")
+        frame = create_frame(speaker, text, True, 0, duration, None)
+        if frame is not None:
+            frames.append(frame)
+    
+    # Create clip from frames
+    try:
+        clip = ImageSequenceClip(frames, fps=frames_per_second)
+        clip = clip.set_duration(duration)
+        
+        # Add audio
+        audio_clip = AudioFileClip(audio_file)
+        clip = clip.set_audio(audio_clip)
+        
+        print(f"Generated clip for segment {segment_index+1} - {speaker}")
+        
+        # Force cleanup to keep memory usage low
+        del frames
+        gc.collect()
+        
+        return clip
+    except Exception as e:
+        print(f"Error creating clip for segment {segment_index}: {str(e)}")
+        try:
+            # Fallback to simple clip
+            print(f"Using fallback clip for segment {segment_index}")
+            fallback_frame = create_frame(speaker, text, True, 0, duration, None)
+            if fallback_frame is not None:
+                clip = ImageSequenceClip([fallback_frame], fps=1)
+                clip = clip.set_duration(duration)
+                audio_clip = AudioFileClip(audio_file)
+                clip = clip.set_audio(audio_clip)
+                return clip
+        except Exception:
+            print(f"Skipping segment {segment_index} due to errors")
+        return None
+
+def write_temp_video(clip, index, num_cores):
+    """Writes a single clip to a temporary file."""
+    temp_file = os.path.join(TEMP_FRAMES_DIR, f"seg_{index:03d}.mp4")
+    
+    try:
+        # Validate clip audio before writing
+        clip = validate_clip_audio(clip, index)
+        
+        # Fix video duration to prevent frame reading issues
+        clip = fix_video_duration(clip, index)
+        
+        # Write the clip to a temporary file
+        clip.write_videofile(
+            temp_file,
+            fps=FPS,
+            codec='libx264',
+            audio_codec='aac',
+            preset='ultrafast',
+            threads=num_cores,
+            verbose=False,
+            logger=None,
+            temp_audiofile=os.path.join(PROJECT_TEMP_DIR, f"temp_audio_{index}.m4a"),
+            ffmpeg_params=["-avoid_negative_ts", "1"]
+        )
+        return temp_file
+    except Exception as e:
+        print(f"Error writing segment {index}: {str(e)}")
+        return None
+    finally:
+        # Ensure clip is closed even if there's an error
+        try:
+            clip.close()
+        except:
+            pass
+
+def combine_video_segments(clips, output_file):
+    """Combines multiple video clips into a final video."""
+    # Get number of cores for processing
+    num_cores = max(mp.cpu_count() - 1, 1)
+    
+    temp_files = []
+    video_clips = []
+    
+    try:
+        print("\nCombining video segments...")
+        
+        # Write clips one by one to temp files, then concatenate them
+        for i, clip in enumerate(clips):
+            temp_file = write_temp_video(clip, i, num_cores)
+            if temp_file:
+                temp_files.append(temp_file)
+        
+        # Clear clips to free memory
+        for clip in clips:
+            try:
+                clip.close()
+            except:
+                pass
+        clips.clear()
+        gc.collect()
+        
+        print("Creating final video...")
+        # Read back all temp videos
+        for i, temp_file in enumerate(temp_files):
+            if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
+                try:
+                    clip = VideoFileClip(temp_file, target_resolution=None, resize_algorithm='fast_bilinear')
+                    clip = validate_clip_audio(clip, i)
+                    video_clips.append(clip)
+                except Exception as e:
+                    print(f"Error loading clip {temp_file}: {str(e)}")
+        
+        if video_clips:
+            try:
+                print("Using concatenation method: chain")
+                final_clip = concatenate_videoclips(video_clips, method="chain")
+                
+                final_clip.write_videofile(
+                    output_file,
+                    fps=FPS,
+                    codec='libx264',
+                    audio_codec='aac',
+                    preset='medium',
+                    threads=num_cores,
+                    verbose=False,
+                    logger=None,
+                    temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio.m4a"),
+                    ffmpeg_params=["-avoid_negative_ts", "1"]
+                )
+                
+                print(f"Video saved as: {output_file}")
+                final_clip.close()
+                return True
+            except Exception as e:
+                print(f"Error with chain concatenation: {str(e)}")
+                
+                # Try alternative concatenation methods
+                return _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores)
+        else:
+            print("No valid video clips were found.")
+            return False
+    finally:
+        # Ensure all video clips are closed before attempting to delete temp files
+        for clip in video_clips:
+            try:
+                clip.close()
+            except:
+                pass
+        
+        # Don't delete temp files here - let cleanup_temp_files handle it
+        # This prevents trying to delete files that might still be in use
+
+def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores):
+    """Try alternative concatenation methods if the primary method fails."""
+    try:
+        print("Retrying with different concatenation method: compose")
+        # Close existing clips first
+        for clip in video_clips:
+            try:
+                clip.close()
+            except:
+                pass
+        
+        # Reload clips with more conservative settings
+        video_clips = []
+        for i, temp_file in enumerate(temp_files):
+            if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
+                try:
+                    clip = VideoFileClip(temp_file, target_resolution=None)
+                    clip = fix_video_duration(clip, i)
+                    video_clips.append(clip)
+                except Exception as e:
+                    print(f"Error loading clip on retry {temp_file}: {str(e)}")
+        
+        if video_clips:
+            final_clip = concatenate_videoclips(video_clips, method="compose")
+            
+            final_clip.write_videofile(
+                output_file,
+                fps=FPS,
+                codec='libx264',
+                audio_codec='aac',
+                preset='medium',
+                threads=num_cores,
+                verbose=False,
+                logger=None,
+                temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio_retry.m4a"),
+                ffmpeg_params=["-avoid_negative_ts", "1"]
+            )
+            
+            print(f"Video saved as: {output_file} (retry method)")
+            final_clip.close()
+            return True
+    except Exception as e:
+        print(f"Error on retry concatenation: {str(e)}")
+        
+        # Last resort fallback - just use the first clip
+        try:
+            print("Using fallback single-clip method")
+            fallback_file = temp_files[0] if temp_files else None
+            if fallback_file and os.path.exists(fallback_file):
+                fallback_clip = VideoFileClip(fallback_file)
+                if os.path.exists("outputs/debate.mp3"):
+                    audio = AudioFileClip("outputs/debate.mp3")
+                    fallback_clip = fallback_clip.set_audio(audio)
+                
+                fallback_clip.write_videofile(
+                    output_file,
+                    fps=FPS,
+                    codec='libx264',
+                    audio_codec='aac',
+                    preset='ultrafast',
+                    threads=num_cores,
+                    verbose=False,
+                    logger=None
+                )
+                fallback_clip.close()
+                print(f"Video saved as: {output_file} (fallback method)")
+                return True
+        except Exception as e:
+            print(f"All methods failed: {str(e)}")
+    
+    return False
