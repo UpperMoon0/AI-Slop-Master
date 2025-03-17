@@ -379,26 +379,37 @@ async def text_to_speech(text: str, voice: str, output_file: str) -> bool:
             print(f"Warning: Could not determine audio duration: {e}")
             audio_duration = 30.0  # Default assumption
         
-        # Create simple timing segments without relying on word boundaries
-        # Split text into smaller chunks for better readability
+        # Create timing segments based on improved chunking
+        # Split text into appropriate chunks for better readability and tracking
         chunks = split_text_into_smaller_parts(text)
-        chunk_duration = audio_duration / max(len(chunks), 1)
         
-        # Create timing segments based on text chunks
-        for i, chunk_text in enumerate(chunks):
-            start_time = i * chunk_duration
-            end_time = (i + 1) * chunk_duration
-            
-            # Ensure the last segment ends exactly at the audio duration
-            if i == len(chunks) - 1:
-                end_time = audio_duration
-            
+        # If no chunks were created or only one chunk, create simple segment
+        if not chunks:
             segment = {
-                "text": chunk_text,
-                "start_time": start_time,
-                "end_time": end_time
+                "text": text,
+                "start_time": 0,
+                "end_time": audio_duration
             }
-            timing_data["segments"].append(segment)
+            timing_data["segments"] = [segment]
+        else:
+            # Calculate timing for each chunk
+            chunk_duration = audio_duration / len(chunks)
+            
+            # Create timing segments based on text chunks
+            for i, chunk_text in enumerate(chunks):
+                start_time = i * chunk_duration
+                end_time = (i + 1) * chunk_duration
+                
+                # Ensure the last segment ends exactly at the audio duration
+                if i == len(chunks) - 1:
+                    end_time = audio_duration
+                
+                segment = {
+                    "text": chunk_text,
+                    "start_time": start_time,
+                    "end_time": end_time
+                }
+                timing_data["segments"].append(segment)
         
         # Save timing data to file
         timing_file = output_file.replace('.mp3', '_timing.json')
