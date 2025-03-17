@@ -74,14 +74,22 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
     # Use the detected speaker from timing if available, otherwise use the provided speaker
     active_speaker = current_speaker if current_speaker else speaker
     
-    # Only highlight if there's actual subtitle text to display AND speaker is a debater
-    should_highlight = bool(current_subtitle) and active_speaker in ["Jane", "Valentino"]
+    # Only highlight if the speaker is a debater (not the narrator)
+    is_debater_speaking = active_speaker in ["Jane", "Valentino"]
     
-    # For all cases, show the avatars but only highlight active debater
+    # For all cases, show the avatars but only highlight the active debater
     if _jane_avatar and _valentino_avatar:
-        # Update highlight status based on active speaker
-        _jane_avatar.set_highlight(should_highlight and active_speaker == "Jane" and speaker != "Narrator")
-        _valentino_avatar.set_highlight(should_highlight and active_speaker == "Valentino" and speaker != "Narrator")
+        # Reset highlight status first - no highlight by default
+        _jane_avatar.set_highlight(False)
+        _valentino_avatar.set_highlight(False)
+        
+        # Only highlight if we have an active debater and there's actual content being spoken
+        if is_debater_speaking and current_subtitle:
+            # Set highlight based on who is currently speaking
+            if active_speaker == "Jane":
+                _jane_avatar.set_highlight(True)
+            elif active_speaker == "Valentino":
+                _valentino_avatar.set_highlight(True)
         
         # Draw avatars on frame
         _jane_avatar.draw_on_frame(frame)
