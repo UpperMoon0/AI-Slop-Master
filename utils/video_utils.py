@@ -39,10 +39,15 @@ _ground_statement_text = ""
 _ground_statement_summary = ""
 _has_seen_first_debater = False  # Flag to track if we've seen the first debater
 
+# Add these global variables to track the current speaker across frames
+_last_detected_speaker = None
+_speaker_stability_counter = 0
+
 def create_frame(speaker, text, highlighted=False, current_time=0, total_duration=5.0, timing_segments=None):
     """Create a video frame with speakers and text."""
     global _narrator_state, _ground_statement_text, _ground_statement_summary, _has_seen_first_debater
     global _top_text, _bottom_text, _jane_avatar, _valentino_avatar
+    global _last_detected_speaker, _speaker_stability_counter
     
     # Create blank frame - using BGR format for consistency with OpenCV
     frame = np.ones((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8) * 240
@@ -56,10 +61,12 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             _narrator_state = "preDebate"
             _ground_statement_text = current_subtitle
             _has_seen_first_debater = False  # Reset this flag when we see ground statement
+            _last_detected_speaker = "Narrator"  # Reset speaker tracking
         elif "Display Summary:" in current_subtitle:
             _ground_statement_summary = current_subtitle.replace("Display Summary:", "Topic:").strip()
         elif "Result:" in current_subtitle:
             _narrator_state = "postDebate"
+            _last_detected_speaker = "Narrator"  # Reset speaker tracking
         # Check for AI Debater and update state
         elif ("AI Debater" in current_subtitle or speaker in ["Jane", "Valentino"]) and _narrator_state == "preDebate":
             # When first debater starts speaking, transition to debate state
@@ -69,12 +76,49 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             # Make sure we have the summary when transitioning to debate state
             if not _ground_statement_summary:
                 _ground_statement_summary = "Topic: " + get_ground_statement_summary()
-                print(f"Loaded summary from file: {_ground_statement_summary}")
     
-    # Use the detected speaker from timing if available, otherwise use the provided speaker
-    active_speaker = current_speaker if current_speaker else speaker
+    # Improve speaker detection with stability
+    determined_speaker = None
     
-    # Only highlight if the speaker is a debater (not the narrator)
+    # First, use the segment's assigned speaker if available
+    if speaker in ["Jane", "Valentino", "Narrator"]:
+        determined_speaker = speaker
+    
+    # If we have timing-based detection
+    if current_speaker:
+        # If we have both and they conflict, prefer segment speaker for Jane/Valentino
+        if determined_speaker and determined_speaker != current_speaker:
+            if determined_speaker in ["Jane", "Valentino"]:
+                # Keep the segment speaker for debaters
+                pass
+            else:
+                # Use timing speaker
+                determined_speaker = current_speaker
+        else:
+            determined_speaker = current_speaker
+    
+    # Apply speaker stability - maintain the same speaker during continuous speech
+    if current_subtitle:  # Only update when there's active speech
+        if determined_speaker:
+            if _last_detected_speaker != determined_speaker:
+                # Speaker appears to have changed, start counter
+                _speaker_stability_counter = 1
+                _last_detected_speaker = determined_speaker
+            else:
+                # Same speaker continues, increase stability
+                _speaker_stability_counter += 1
+    else:
+        # No active speech, gradually decrease stability
+        _speaker_stability_counter = max(0, _speaker_stability_counter - 1)
+        
+        # Reset speaker after period of silence
+        if _speaker_stability_counter == 0:
+            _last_detected_speaker = None
+    
+    # Get the final active speaker, with preference for stable detection
+    active_speaker = _last_detected_speaker if _speaker_stability_counter > 0 else None
+    
+    # For avatar highlighting, only use active speaker if it's a debater
     is_debater_speaking = active_speaker in ["Jane", "Valentino"]
     
     # For all cases, show the avatars but only highlight the active debater
