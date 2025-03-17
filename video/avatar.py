@@ -43,8 +43,14 @@ class Avatar:
             # Make sure the avatar image is the right size
             avatar = cv2.resize(self.image, (self.size, self.size)) if self.image.shape[0] != self.size else self.image
             
+            # Convert RGB to BGR if needed (fixing color inversion issue)
+            if len(avatar.shape) == 3 and avatar.shape[2] == 3:
+                avatar_bgr = cv2.cvtColor(avatar, cv2.COLOR_RGB2BGR)
+            else:
+                avatar_bgr = avatar
+                
             # Copy the avatar to the frame
-            frame[y:y+self.size, x:x+self.size] = avatar
+            frame[y:y+self.size, x:x+self.size] = avatar_bgr
         
         # Add highlight if needed
         if self.highlighted:
