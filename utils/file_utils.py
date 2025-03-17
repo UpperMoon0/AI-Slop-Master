@@ -2,8 +2,12 @@ import os
 import time
 import shutil
 
+# Add a global variable to store the summary
+_ground_statement_summary = None
+
 def parse_debate_file():
     """Parse debate.txt file to get dialogue segments and speakers."""
+    global _ground_statement_summary
     dialogue_segments = []
     
     try:
@@ -16,8 +20,9 @@ def parse_debate_file():
                 if not line:
                     continue
                 
-                # Skip Display Summary line - it should only be displayed, not spoken
+                # Extract the summary but don't include it in spoken dialogue
                 if line.startswith("Display Summary:"):
+                    _ground_statement_summary = line.replace("Display Summary:", "").strip()
                     continue
                 
                 new_speaker = None
@@ -70,6 +75,23 @@ def parse_debate_file():
     
     print(f"Parsed {len(validated_segments)} dialogue segments")
     return validated_segments
+
+def get_ground_statement_summary():
+    """Get the extracted ground statement summary."""
+    global _ground_statement_summary
+    
+    # If we don't have a summary yet, try to extract it directly
+    if _ground_statement_summary is None:
+        try:
+            with open('outputs/debate.txt', 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.startswith("Display Summary:"):
+                        _ground_statement_summary = line.replace("Display Summary:", "").strip()
+                        break
+        except Exception as e:
+            print(f"Error extracting ground statement summary: {e}")
+    
+    return _ground_statement_summary
 
 def cleanup_temp_files(temp_frames_dir, project_temp_dir):
     """Clean up all temporary files after video creation."""

@@ -13,6 +13,7 @@ from utils.text_utils import wrap_text, get_font_metrics
 from utils.audio_utils import get_current_subtitle, get_segment_duration, get_segment_timing
 from video.text import Text
 from video.avatar import Avatar
+from utils.file_utils import get_ground_statement_summary
 
 # Text containers for top and bottom text
 _top_text = Text(position="top", background=True)
@@ -64,6 +65,11 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             # When first debater starts speaking, transition to debate state
             _has_seen_first_debater = True
             _narrator_state = "debate"
+            
+            # Make sure we have the summary when transitioning to debate state
+            if not _ground_statement_summary:
+                _ground_statement_summary = "Topic: " + get_ground_statement_summary()
+                print(f"Loaded summary from file: {_ground_statement_summary}")
     
     # Use the detected speaker from timing if available, otherwise use the provided speaker
     active_speaker = current_speaker if current_speaker else speaker
@@ -96,8 +102,14 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
         _top_text.clear()  # Clear previous content
         
         # During debate, always show the summary if available
-        if _narrator_state == "debate" and _ground_statement_summary:
-            _top_text.update_text(_ground_statement_summary)
+        if _narrator_state == "debate":
+            # If summary is not set, try to get it from the file
+            if not _ground_statement_summary:
+                _ground_statement_summary = "Topic: " + get_ground_statement_summary()
+                print(f"Loaded summary from file for display: {_ground_statement_summary}")
+            
+            if _ground_statement_summary:
+                _top_text.update_text(_ground_statement_summary)
         # During pre debate, show the narrator's text, including introduction and ground statement
         elif _narrator_state == "preDebate":
             if speaker == "Narrator" and current_subtitle:
@@ -105,9 +117,6 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
                 if not "Display Summary:" in current_subtitle:
                     # Show whatever the narrator is currently saying during preDebate
                     _top_text.update_text(current_subtitle)
-            elif _ground_statement_text and not speaker == "Narrator":
-                # For non-narrator speakers in preDebate, show the full ground statement
-                _top_text.update_text(_ground_statement_text)
         # During post debate, show the result
         elif _narrator_state == "postDebate" and current_subtitle and "Result:" in current_subtitle:
             _top_text.update_text(current_subtitle)
