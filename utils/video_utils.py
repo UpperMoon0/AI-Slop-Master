@@ -16,6 +16,9 @@ from video.avatar import Avatar
 from utils.file_utils import get_ground_statement_summary
 from video.clip import VideoClip
 
+# Add at the top of the file with other globals
+DEBUG_TIMING = False  # Global flag for timing debug mode
+
 # Text containers for top and bottom text
 _top_text = Text(position="top", background=True)
 _bottom_text = Text(position="bottom", background=False)
@@ -44,7 +47,7 @@ _has_seen_first_debater = False  # Flag to track if we've seen the first debater
 _last_detected_speaker = None
 _speaker_stability_counter = 0
 
-def create_frame(speaker, text, highlighted=False, current_time=0, total_duration=5.0, timing_segments=None):
+def create_frame(speaker, text, highlighted=False, current_time=0, total_duration=5.0, timing_segments=None, debug_timing=False):
     """Create a video frame with speakers and text."""
     global _narrator_state, _ground_statement_text, _ground_statement_summary, _has_seen_first_debater
     global _top_text, _bottom_text, _jane_avatar, _valentino_avatar
@@ -184,6 +187,24 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             _bottom_text.update_text(current_subtitle)
             _bottom_text.draw(draw)
         
+        # Draw timing debug information if enabled
+        if debug_timing and timing_segments and pil_img:
+            draw = ImageDraw.Draw(pil_img)
+            debug_font = ImageFont.truetype(TEXT_FONT, 14)
+            
+            # Display current time at the top right corner
+            time_text = f"Time: {current_time:.2f}s / {total_duration:.2f}s"
+            draw.text((VIDEO_WIDTH - 200, 10), time_text, fill=(200, 200, 200), font=debug_font)
+            
+            # Display the current subtitle segment info if available
+            current_subtitle_info = "No current segment"
+            for i, segment in enumerate(timing_segments):
+                if segment.get('start_time', 0) <= current_time <= segment.get('end_time', 0):
+                    current_subtitle_info = f"Segment {i}: {segment.get('start_time', 0):.2f}s - {segment.get('end_time', 0):.2f}s"
+                    break
+            
+            draw.text((VIDEO_WIDTH - 350, 30), current_subtitle_info, fill=(200, 200, 200), font=debug_font)
+        
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)  # Convert back to BGR for OpenCV
     finally:
         if isinstance(pil_img, Image.Image):
@@ -194,33 +215,14 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
 
 def create_frame_worker(args):
     """Worker function for parallel frame creation"""
+    index, speaker, text, highlighted, current_time, total_duration, timing_segments = args
     try:
-        speaker, text, highlighted, current_time, total_duration, timing_segments = args
-        
-        # Get the current subtitle and speaker from timing data
-        current_subtitle, current_speaker = get_current_subtitle(timing_segments, current_time, text)
-        
-        # Only highlight if:
-        # 1. There's subtitle content
-        # 2. We're not in narrator mode
-        # 3. The actual speaker is determined from timing data
-        should_highlight = False
-        if current_subtitle and current_speaker:
-            if current_speaker in ["Jane", "Valentino"] and speaker != "Narrator":
-                should_highlight = (current_speaker == speaker)
-        
-        frame = create_frame(speaker, text, should_highlight, current_time, total_duration, timing_segments)
-        
-        # Verify frame is valid
-        if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
-            return None
-        # Ensure frame has correct dimensions
-        if frame.shape != (VIDEO_HEIGHT, VIDEO_WIDTH, 3):
-            return None
-        return frame
+        # Pass the debug flag
+        frame = create_frame(speaker, text, highlighted, current_time, total_duration, timing_segments, DEBUG_TIMING)
+        return index, frame
     except Exception as e:
-        print(f"Error in frame worker: {str(e)}")
-        return None
+        print(f"Error creating frame: {str(e)}")
+        return index, None
 
 def validate_clip_audio(clip, index):
     """
@@ -252,28 +254,22 @@ def fix_video_duration(clip, index):
     # Simply return the clip without modification
     return clip
 
-def create_segment_video(segment_index, speaker, text, audio_file, fast_mode=False):
-    """Creates a video clip for a single segment.
-    
-    Args:
-        segment_index: Index of the segment
-        speaker: Name of the speaker
-        text: Text content
-        audio_file: Path to the audio file
-        fast_mode: If True, use faster settings with lower quality
-    """
+def create_segment_video(segment_index, speaker, text, audio_file, mode='normal'):
+    """Creates a video clip for a single segment."""
     duration = max(get_segment_duration(audio_file), 3.0)
     timing_segments = get_segment_timing(audio_file)
     
-    # Generate frames with evenly distributed timestamps
+    # Generate frames with timing that aligns precisely with audio
     frames = []
-    # Use lower frame rate in fast mode
-    frames_per_second = 1 if fast_mode else 2
+    # Higher frame rate for better synchronization
+    frames_per_second = 5 if mode == 'normal' else (3 if mode == 'balanced' else 2)
     total_frames = max(int(duration * frames_per_second), 1)
     time_step = duration / total_frames
     
+    # Create frames with precise timing information
     for j in range(total_frames):
         time_point = j * time_step
+        # Pass exact timestamp for each frame
         frame = create_frame(speaker, text, True, time_point, duration, timing_segments)
         if frame is not None:
             frames.append(frame)
@@ -434,7 +430,7 @@ def combine_video_segments(clips, output_file, mode='normal'):
                     },
                     'balanced': {
                         'method': 'compose',
-                        'preset': 'veryfast', 
+                        'preset': 'veryfast',
                         'crf': 22,
                         'extra_params': ["-tune", "zerolatency", "-movflags", "+faststart"]
                     },
@@ -448,7 +444,6 @@ def combine_video_segments(clips, output_file, mode='normal'):
                 
                 config = encoding_configs.get(mode, encoding_configs['normal'])
                 concat_method = config['method']
-                
                 print(f"Using concatenation method: {concat_method}")
                 final_clip = concatenate_videoclips(video_clips, method=concat_method)
                 
@@ -565,7 +560,7 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
             fallback_file = temp_files[0] if temp_files else None
             if fallback_file and os.path.exists(fallback_file):
                 fallback_clip = VideoFileClip(fallback_file)
-                if os.path.exists("outputs/debate.mp3"):
+                if os.path.exists("outputs/debate.mp3"): 
                     audio = AudioFileClip("outputs/debate.mp3")
                     fallback_clip = fallback_clip.set_audio(audio)
                     
@@ -581,16 +576,30 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                     verbose=False,
                     logger=None
                 )
+                print(f"Video saved as: {output_file} (fallback method)")
+                fallback_clip.close()
+                return True
+        except Exception as e:
+            print(f"Error with fallback single-clip method: {str(e)}")
+            return False
+    return False
 
-
-
-
-
-
-
-
-
-
-
-
-    # ...existing code...    """    Faster concatenation of video clips with optimized settings.    """def fast_concatenate_clips(clips, method='compose'):        return False            print(f"All methods failed: {str(e)}")        except Exception as e:                return True                print(f"Video saved as: {output_file} (fallback method)")                fallback_clip.close()        Args:        clips: List of MoviePy VideoClip objects to concatenate        method: Method for concatenation ('compose' is faster than 'chain')        Returns:        Concatenated MoviePy VideoClip    """    # Wrap each clip in a VideoClip object    wrapped_clips = [VideoClip(clip, i) for i, clip in enumerate(clips)]        # Use the static concatenate method    result_clip = VideoClip.concatenate(wrapped_clips, method)        # Return the underlying MoviePy clip    return result_clip.get_raw_clip() if result_clip else None
+def fast_concatenate_clips(clips, method='compose'):
+    """
+    Faster concatenation of video clips with optimized settings.
+    
+    Args:
+        clips: List of MoviePy VideoClip objects to concatenate
+        method: Method for concatenation ('compose' is faster than 'chain')
+        
+    Returns:
+        Concatenated MoviePy VideoClip
+    """
+    # Wrap each clip in a VideoClip object
+    wrapped_clips = [VideoClip(clip, i) for i, clip in enumerate(clips)]
+    
+    # Use the static concatenate method
+    result_clip = VideoClip.concatenate(wrapped_clips, method)
+    
+    # Return the underlying MoviePy clip
+    return result_clip.get_raw_clip() if result_clip else None

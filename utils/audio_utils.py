@@ -1,47 +1,48 @@
 import os
 import json
-from pydub import AudioSegment
-import edge_tts
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+import edge_tts
+from typing import List, Dict, Optional, Tuple
+from pydub import AudioSegment
 from utils.text_utils import split_text_into_smaller_parts
 
-def get_segment_audio_file(index):
-    """Get the audio file for a specific segment."""
+# Define voices
+VOICES = {
+    "Narrator": "en-US-ChristopherNeural",
+    "AI Debater 1": "en-GB-RyanNeural",
+    "AI Debater 2": "en-US-JasonNeural",
+    "Jane": "en-GB-SoniaNeural",
+    "Valentino": "en-US-GuyNeural"
+}
+
+def get_segment_audio_file(segment_index):
+    """Get the audio file for a specific segment index."""
     try:
-        # Just use the index directly for predictable file naming
-        expected_file = os.path.join('outputs/audio_output', f'part_{index:02d}.mp3')
+        audio_file = f'outputs/audio_output/part_{segment_index:02d}.mp3'
+        if os.path.exists(audio_file):
+            return audio_file
         
-        if os.path.exists(expected_file) and os.path.getsize(expected_file) > 0:
-            return expected_file
-            
-        # Fallback to old method of searching files if direct naming fails
+        # Try to find by looking at available files
         files = [f for f in os.listdir('outputs/audio_output') if f.endswith('.mp3') and not f.endswith('_timing.mp3')]
         files.sort()
+        if segment_index < len(files):
+            return os.path.join('outputs/audio_output', files[segment_index])
         
-        if index < len(files):
-            return os.path.join('outputs/audio_output', files[index])
-        else:
-            print(f"Warning: No audio file found for segment {index} (total files: {len(files)})")
-            return None
+        return None
     except Exception as e:
-        print(f"Error finding audio file: {str(e)}")
+        print(f"Error getting segment audio file: {str(e)}")
         return None
 
 def get_segment_duration(audio_file):
-    """Get the duration of an audio segment."""
-    if not audio_file or not os.path.exists(audio_file):
-        return 5.0  # Default duration if no audio file
-        
+    """Get the duration of an audio file in seconds."""
     try:
-        # Use pydub which is more reliable than ffmpeg directly
-        audio = AudioSegment.from_file(audio_file)
-        duration = len(audio) / 1000.0
-        return duration
+        if audio_file and os.path.exists(audio_file):
+            audio = AudioSegment.from_mp3(audio_file)
+            return len(audio) / 1000.0  # pydub uses milliseconds
+        return 5.0  # Default duration if we can't determine
     except Exception as e:
         print(f"Error getting audio duration: {str(e)}")
-        print(f"Using default duration for {audio_file}")
-        return 5.0  # Default duration on error
+        return 5.0
 
 def get_all_timing_data():
     """Get all timing data across all segments for a comprehensive view."""
@@ -53,106 +54,109 @@ def get_all_timing_data():
         timing_files.sort()  # Ensure proper order
         
         # Absolute start time tracker to adjust all segments to a global timeline
-        absolute_start = 0
+        absolute_start_time = 0.0
         
         for timing_file in timing_files:
             try:
                 # Extract the audio file name for this timing file
                 audio_file = timing_file.replace('_timing.json', '.mp3')
-                audio_path = os.path.join('outputs/audio_output', audio_file)
                 
-                # Get the duration of this audio segment
-                duration = 0
-                if os.path.exists(audio_path):
-                    audio = AudioSegment.from_mp3(audio_path)
-                    duration = len(audio) / 1000.0
+                # Get audio duration
+                audio_duration = 0.0
+                if os.path.exists(os.path.join('outputs/audio_output', audio_file)):
+                    audio = AudioSegment.from_mp3(os.path.join('outputs/audio_output', audio_file))
+                    audio_duration = len(audio) / 1000.0
                 
                 # Load timing data
                 with open(os.path.join('outputs/audio_output', timing_file), 'r') as f:
                     timing_data = json.load(f)
                 
-                # Get speaker for this segment
-                speaker = None
+                # Get the first segment to adjust everything
                 if timing_data.get("segments") and len(timing_data["segments"]) > 0:
                     first_segment = timing_data["segments"][0]
-                    if "text" in first_segment:
-                        # Try to determine speaker from text
-                        text = first_segment["text"]
-                        speaker = get_speaker_for_text(text)
+                    segment_start = first_segment.get("start_time", 0)
+                    
+                    # Adjust absolute timing for this file
+                    file_offset = absolute_start_time - segment_start
                 
                 # Process segments and adjust to absolute timeline
                 for segment in timing_data.get("segments", []):
                     # Make a copy with adjusted timing
                     adjusted_segment = segment.copy()
                     
+                    # Adjust timing to global timeline
                     if "start_time" in adjusted_segment:
-                        adjusted_segment["start_time"] += absolute_start
-                    elif "start" in adjusted_segment:
-                        adjusted_segment["start_time"] = adjusted_segment["start"] + absolute_start
-                        adjusted_segment["start"] += absolute_start
-                        
+                        adjusted_segment["start_time"] += file_offset
                     if "end_time" in adjusted_segment:
-                        adjusted_segment["end_time"] += absolute_start
-                    elif "end" in adjusted_segment:
-                        adjusted_segment["end_time"] = adjusted_segment["end"] + absolute_start
-                        adjusted_segment["end"] += absolute_start
+                        adjusted_segment["end_time"] += file_offset
                     
-                    # Add speaker information if available
-                    if speaker:
-                        adjusted_segment["speaker"] = speaker
-                    else:
-                        # Try to determine speaker from text
-                        if "text" in adjusted_segment:
-                            adjusted_segment["speaker"] = get_speaker_for_text(adjusted_segment["text"])
+                    # Add the audio file reference
+                    adjusted_segment["audio_file"] = audio_file
+                    
+                    # Include segment index for easy reference
+                    segment_index = timing_file.split("_")[1].split(".")[0]
+                    if segment_index.isdigit():
+                        adjusted_segment["segment_index"] = int(segment_index)
                     
                     all_timing.append(adjusted_segment)
                 
-                # Update absolute start time for next segment
-                absolute_start += duration
+                # Update absolute start time for the next file
+                absolute_start_time += audio_duration
                 
             except Exception as e:
                 print(f"Error processing timing file {timing_file}: {str(e)}")
-        
+                
         print(f"Loaded {len(all_timing)} timing segments across {len(timing_files)} audio files")
         return all_timing
-        
     except Exception as e:
         print(f"Error getting timing data: {str(e)}")
         return []
 
-def get_speaker_for_text(text):
-    """Determine the speaker for a given text segment."""
-    global _speaker_map_cache
-    
-    if _speaker_map_cache is None:
-        _speaker_map_cache = parse_debate_file()
-    
-    # Try exact match first
-    if text in _speaker_map_cache:
-        return _speaker_map_cache[text]
-    
-    # Try to find a partial match
-    best_match = None
-    best_match_length = 0
-    best_match_speaker = None
-    
-    for mapped_text, speaker in _speaker_map_cache.items():
-        # Check if text is in the mapped text
-        if text in mapped_text and len(mapped_text) > best_match_length:
-            best_match = text
-            best_match_length = len(mapped_text)
-            best_match_speaker = speaker
-        # Check if mapped text is in the text
-        elif mapped_text in text and len(mapped_text) > best_match_length:
-            best_match = mapped_text
-            best_match_length = len(mapped_text)
-            best_match_speaker = speaker
-    
-    if best_match_speaker:
-        return best_match_speaker
-    
-    # Default to Narrator if no match found
-    return "Narrator"
+def parse_debate():
+    """Parse the debate.txt file to map text segments to speakers."""
+    segments = []
+    try:
+        with open('outputs/debate.txt', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        current_speaker = None
+        current_text = ""
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Check if this line defines a speaker
+            if ":" in line and line.split(":")[0] in ["Narrator", "AI Debater 1", "AI Debater 2", "Jane", "Valentino", "Ground Statement", "Summary", "Result"]:
+                # If we have a previous segment, add it
+                if current_speaker and current_text:
+                    segments.append({
+                        "speaker": current_speaker,
+                        "text": current_text
+                    })
+                
+                parts = line.split(":", 1)
+                current_speaker = parts[0]
+                current_text = parts[1].strip()
+            else:
+                # Continue previous segment
+                if current_text:
+                    current_text += " " + line
+                else:
+                    current_text = line
+        
+        # Add the last segment
+        if current_speaker and current_text:
+            segments.append({
+                "speaker": current_speaker,
+                "text": current_text
+            })
+                    
+        return segments
+    except Exception as e:
+        print(f"Error parsing debate: {str(e)}")
+        return []
 
 def get_segment_timing(audio_file):
     """Get the timing information for a specific audio segment."""
@@ -160,256 +164,111 @@ def get_segment_timing(audio_file):
     all_timing = getattr(get_segment_timing, 'all_timing', None)
     if all_timing is None:
         all_timing = get_all_timing_data()
+        
         # Cache it for future calls
         get_segment_timing.all_timing = all_timing
-    
-    if not audio_file:
+        
+    # If no audio file specified, return all timing
+    if audio_file is None:
         return all_timing
-    
+        
     # If we need specific segment timing, get the file's timing
     timing_file = audio_file.replace('.mp3', '_timing.json')
+    
     try:
         if os.path.exists(timing_file):
             with open(timing_file, 'r') as f:
                 timing_data = json.load(f)
                 segments = timing_data.get("segments", [])
-                # Process each segment to ensure it has required fields
-                for segment in segments:
-                    if isinstance(segment, dict):
-                        # Ensure timing fields exist
-                        if "start_time" not in segment:
-                            segment["start_time"] = segment.get("start", 0)
-                        if "end_time" not in segment:
-                            segment["end_time"] = segment.get("end", 5)
-                        
-                        # Extract text if present but not in expected field
-                        if "text" not in segment and "words" in segment:
-                            segment["text"] = " ".join([w.get("word", "") for w in segment["words"]])
-                        
-                        # Add speaker information
-                        if "text" in segment and "speaker" not in segment:
-                            segment["speaker"] = get_speaker_for_text(segment["text"])
                 
+                # Ensure all segments have proper timing fields
+                for segment in segments:
+                    if "start_time" not in segment:
+                        segment["start_time"] = 0.0
+                    if "end_time" not in segment:
+                        segment["end_time"] = get_segment_duration(audio_file)
+                        
                 return segments
         else:
             # Return the relevant portion of the global timing data
             return all_timing
-            
-    except (FileNotFoundError, json.JSONDecodeError) as e:
+    except Exception as e:
         print(f"Warning: Could not read timing file for {audio_file}: {str(e)}")
         # Fall back to global timing data
         return all_timing
 
-def parse_debate_file():
-    """Parse the debate.txt file to map text segments to speakers."""
-    speaker_text_map = {}
-    try:
-        with open('outputs/debate.txt', 'r', encoding='utf-8') as f:
-            content = f.read()
-            
-        # Split by line breaks and process
-        lines = content.split('\n')
-        current_speaker = "Narrator"
-        current_text = []
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            # Skip Summary line - it should only be displayed, not spoken
-            if line.startswith("Summary:"):
-                continue
-                
-            # Check for speaker patterns
-            if line.startswith("Ground Statement:") or line.startswith("Result:"):
-                # Complete previous speaker's text
-                if current_text:
-                    full_text = ' '.join(current_text).strip()
-                    # Add the full text first for better matching
-                    if full_text:
-                        speaker_text_map[full_text] = current_speaker
-                    # Then add individual sentences for partial matching
-                    for sentence in full_text.replace('! ', '!<SPLIT>').replace('? ', '?<SPLIT>').replace('. ', '.<SPLIT>').split('<SPLIT>'):
-                        if sentence.strip():
-                            speaker_text_map[sentence.strip()] = current_speaker
-                
-                current_speaker = "Narrator"
-                current_text = [line]
-            elif ":" in line:
-                speaker_part = line.split(":", 1)[0].strip()
-                # Check for valid speaker labels
-                if speaker_part in ["Jane", "Valentino", "AI Debater 1", "AI Debater 2", "Narrator"]:
-                    # Complete previous speaker's text
-                    if current_text:
-                        full_text = ' '.join(current_text).strip()
-                        # Add the full text first for better matching
-                        if full_text:
-                            speaker_text_map[full_text] = current_speaker
-                        # Then add individual sentences for partial matching
-                        for sentence in full_text.replace('! ', '!<SPLIT>').replace('? ', '?<SPLIT>').replace('. ', '.<SPLIT>').split('<SPLIT>'):
-                            if sentence.strip():
-                                speaker_text_map[sentence.strip()] = current_speaker
-                    
-                    # Map AI Debater 1/2 to Jane/Valentino if needed
-                    if speaker_part == "AI Debater 1":
-                        current_speaker = "Jane"
-                    elif speaker_part == "AI Debater 2":
-                        current_speaker = "Valentino"
-                    else:
-                        current_speaker = speaker_part
-                    
-                    current_text = [line.split(":", 1)[1].strip()]
-                else:
-                    # If not a recognized speaker label, continue with current text
-                    current_text.append(line)
-            else:
-                current_text.append(line)
-        
-        # Add final text segment
-        if current_text:
-            full_text = ' '.join(current_text).strip()
-            # Add the full text first for better matching
-            if full_text:
-                speaker_text_map[full_text] = current_speaker
-            # Then add individual sentences for partial matching
-            for sentence in full_text.replace('! ', '!<SPLIT>').replace('? ', '?<SPLIT>').replace('. ', '.<SPLIT>').split('<SPLIT>'):
-                if sentence.strip():
-                    speaker_text_map[sentence.strip()] = current_speaker
-        
-        return speaker_text_map
-    except Exception as e:
-        print(f"Error parsing debate file: {str(e)}")
-        return {}
-
-# Cache for the speaker map to avoid repeated parsing
-_speaker_map_cache = None
-
-def get_current_subtitle(timing_segments, current_time, original_text) -> Tuple[str, Optional[str]]:
-    """
-    Get the subtitle text and speaker that should be displayed at the current time.
-    
-    Returns:
-        Tuple containing (subtitle_text, speaker_name)
-    """
-    global _speaker_map_cache
-    
-    if not timing_segments:
-        return original_text, None
-    
-    # Initialize speaker map if not already done
-    if _speaker_map_cache is None:
-        _speaker_map_cache = parse_debate_file()
-    
-    # Find active segments for the current time
-    active_segments = []
-    for segment in timing_segments:
-        start_time = segment.get("start_time", segment.get("start", 0))
-        end_time = segment.get("end_time", segment.get("end", 5))
-        
-        if start_time <= current_time <= end_time:
-            active_segments.append(segment)
-    
-    # If we have multiple active segments, choose the one with the longest text
-    if active_segments:
-        best_segment = max(active_segments, key=lambda s: len(s.get("text", "")))
-        segment_text = best_segment.get("text", "").strip()
-        
-        # First check if the segment already has speaker information
-        if "speaker" in best_segment and best_segment["speaker"]:
-            return segment_text, best_segment["speaker"]
-        
-        if segment_text:
-            # Look for an exact match in our speaker map
-            if segment_text in _speaker_map_cache:
-                current_speaker = _speaker_map_cache[segment_text]
-                return segment_text, current_speaker
-            
-            # Try to find a partial match
-            best_match_speaker = get_speaker_for_text(segment_text)
-            if best_match_speaker:
-                return segment_text, best_match_speaker
-    
-    # If no specific segment text is found, return empty
-    return "", None
-
-# Voice settings
-VOICES = {
-    'Narrator': 'en-US-ChristopherNeural',
-    'Jane': 'en-US-JennyNeural',
-    'Valentino': 'en-GB-RyanNeural'
-}
-
 async def text_to_speech(text: str, voice: str, output_file: str) -> bool:
     """Convert text to speech using Edge TTS with detailed timing information."""
     try:
-        # Create communicate object
-        communicate = edge_tts.Communicate(text, voice)
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         
         # Create both the audio file and timing file simultaneously
         timing_data = {"segments": []}
-        word_boundary_list = []
         
-        # Generate audio - don't use async with for BufferedWriter
-        audio_file = open(output_file, "wb")
+        print(f"Creating audio file: {output_file}")
+        
         try:
-            # Process the audio stream with timing information
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_file.write(chunk["data"])
-                elif chunk["type"] == "WordBoundary":
-                    word_boundary_list.append(chunk)
-        finally:
-            audio_file.close()
-        
-        print(f"Created audio file: {output_file}")
-        
-        # Verify the audio file was created and is valid
-        if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
-            print(f"Error: Failed to create valid audio file at {output_file}")
-            return False
+            # Initialize Edge TTS
+            communicate = edge_tts.Communicate(text, voice)
             
-        # Calculate the duration of the audio file
-        audio_duration = 0
-        try:
-            audio = AudioSegment.from_file(output_file)
-            audio_duration = len(audio) / 1000.0
-            print(f"Audio duration: {audio_duration:.2f}s")
+            # Process the audio stream with timing information
+            await communicate.save(output_file)
+            
+            # Get duration of the audio file
+            duration = 0
+            try:
+                audio = AudioSegment.from_mp3(output_file)
+                duration = len(audio) / 1000.0  # Convert ms to seconds
+                print(f"Audio duration: {duration:.2f}s")
+            except Exception as e:
+                print(f"Warning: Could not get audio duration: {str(e)}")
+                duration = 5.0  # Default duration if we can't determine it
+                
         except Exception as e:
-            print(f"Warning: Could not determine audio duration: {e}")
-            audio_duration = 30.0  # Default assumption
+            print(f"Error in TTS generation: {str(e)}")
+            return False
         
         # Create timing segments based on improved chunking
-        # Split text into appropriate chunks for better readability and tracking
-        chunks = split_text_into_smaller_parts(text)
-        
-        # If no chunks were created or only one chunk, create simple segment
-        if not chunks:
-            segment = {
+        try:
+            # Smaller chunk size for better readability (30-40 chars per line)
+            max_chunk_size = 40
+            
+            # Ensure we don't miss any text at the beginning
+            # Split the entire text into smaller, more readable chunks
+            text_chunks = split_text_into_smaller_parts(text, max_chars=max_chunk_size)
+            
+            if len(text_chunks) == 1:
+                # For very short text, use a single segment
+                segment = {
+                    "text": text,
+                    "start_time": 0,
+                    "end_time": duration
+                }
+                timing_data["segments"] = [segment]
+            else:
+                # Calculate timing for each chunk
+                chunk_duration = duration / len(text_chunks)
+                
+                # Create timing segments based on text chunks
+                for i, chunk in enumerate(text_chunks):
+                    start_time = i * chunk_duration
+                    end_time = (i + 1) * chunk_duration
+                    
+                    segment = {
+                        "text": chunk,
+                        "start_time": start_time,
+                        "end_time": end_time
+                    }
+                    timing_data["segments"].append(segment)
+        except Exception as e:
+            print(f"Warning: Could not create detailed timing: {str(e)}")
+            # Create at least one basic timing segment
+            timing_data["segments"] = [{
                 "text": text,
                 "start_time": 0,
-                "end_time": audio_duration
-            }
-            timing_data["segments"] = [segment]
-        else:
-            # Calculate timing for each chunk
-            chunk_duration = audio_duration / len(chunks)
-            
-            # Create timing segments based on text chunks
-            for i, chunk_text in enumerate(chunks):
-                start_time = i * chunk_duration
-                end_time = (i + 1) * chunk_duration
-                
-                # Ensure the last segment ends exactly at the audio duration
-                if i == len(chunks) - 1:
-                    end_time = audio_duration
-                
-                segment = {
-                    "text": chunk_text,
-                    "start_time": start_time,
-                    "end_time": end_time
-                }
-                timing_data["segments"].append(segment)
+                "end_time": duration
+            }]
         
         # Save timing data to file
         timing_file = output_file.replace('.mp3', '_timing.json')
@@ -419,8 +278,62 @@ async def text_to_speech(text: str, voice: str, output_file: str) -> bool:
         
         return True
     except Exception as e:
-        print(f"Error in text_to_speech: {str(e)}")
+        print(f"Error in text_to_sech: {str(e)}")
         return False
+
+def get_current_subtitle(timing_segments, current_time, default_text=''):
+    """Get the current subtitle text based on timing information.
+    
+    Args:
+        timing_segments: List of timing segments with text and timestamps
+        current_time: Current time in the audio playback
+        default_text: Default text if no matching segment is found
+        
+    Returns:
+        Tuple of (current_subtitle_text, speaker_name)
+    """
+    if not timing_segments or timing_segments is None:
+        return default_text, None
+    
+    # Add a small lookahead buffer (0.1 seconds) to account for processing delay
+    buffered_time = current_time + 0.1
+    
+    # Find the segment that matches the current time
+    current_segment = None
+    for segment in timing_segments:
+        start_time = segment.get('start_time', 0)
+        end_time = segment.get('end_time', 0)
+        
+        # Check if the current time falls within this segment's time range
+        if start_time <= buffered_time <= end_time:
+            current_segment = segment
+            break
+        
+        # If we've passed the current time and haven't found a match,
+        # use the previous segment to avoid showing text too early
+        if start_time > buffered_time:
+            break
+        
+        # Keep track of the last valid segment we've seen
+        current_segment = segment
+    
+    if current_segment:
+        text = current_segment.get('text', default_text)
+        
+        # If we're near the end of a segment (within 0.1s), don't show the next one yet
+        if current_segment.get('end_time', 0) - current_time < 0.1:
+            # Find if there's a gap before the next segment starts
+            segment_index = timing_segments.index(current_segment)
+            if segment_index + 1 < len(timing_segments):
+                next_segment = timing_segments[segment_index + 1]
+                if next_segment.get('start_time', 0) - current_segment.get('end_time', 0) > 0.2:
+                    # There's a gap, so clear the subtitle during this gap
+                    if current_time > current_segment.get('end_time', 0):
+                        return "", None
+        
+        return text, None
+    
+    return default_text, None
 
 async def process_debate_segments(segments: List[Dict[str, str]], output_dir: str = 'outputs/audio_output') -> bool:
     """Process debate segments and generate audio."""
@@ -442,11 +355,16 @@ async def process_debate_segments(segments: List[Dict[str, str]], output_dir: st
             speaker = segment["speaker"]
             text = segment["text"]
             
+            # Ensure we capture complete text, even without labels
+            # This will help prevent missing text like "Welcome to our AI debate"
+            text = text.strip()
+            
             # Select voice based on speaker
             voice = VOICES.get(speaker, VOICES['Narrator'])
             
             # Create audio file
             output_file = f'{output_dir}/part_{i:02d}.mp3'
+            
             print(f"Generating audio for segment {i+1}/{len(segments)} - Speaker: {speaker}")
             
             success = await text_to_speech(text, voice, output_file)
@@ -486,5 +404,5 @@ async def generate_debate_speech(segments: List[Dict[str, str]],
         success = await process_debate_segments(segments, output_dir)
         return success
     except Exception as e:
-        print(f"Error in generate_debate_speech: {e}")
+        print(f"Error generating debate speech: {e}")
         return False

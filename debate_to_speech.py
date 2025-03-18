@@ -24,10 +24,3 @@ async def process_debate() -> bool:
     except Exception as e:
         logger.error(f"Error in process_debate: {e}")
         return False
-
-if __name__ == "__main__":
-    success = asyncio.run(process_debate())
-    if success:
-        logger.info("Debate speech generation completed successfully!")
-    else:
-        logger.error("Failed to generate debate speech.")

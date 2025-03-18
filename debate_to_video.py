@@ -10,7 +10,7 @@ from utils.audio_utils import get_segment_audio_file
 from utils.video_utils import create_segment_video, combine_video_segments
 from config import TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
 
-def create_debate_video(output_path='outputs/debate_video.mp4', mode='normal', batch_size=10):
+def create_debate_video(output_path='outputs/debate_video.mp4', mode='balanced', batch_size=10):
     """Create a video visualization of the debate with audio.
     
     Args:
@@ -109,3 +109,21 @@ def create_debate_video(output_path='outputs/debate_video.mp4', mode='normal', b
     seconds = total_time % 60
     print(f"\n=== Video Generation Complete ===")
     print(f"Total processing time: {minutes} minutes {seconds:.2f} seconds")
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Generate debate video with options.')
+    parser.add_argument('--mode', choices=['fast', 'balanced', 'normal'], default='normal',
+                      help='Video generation mode: fast (lowest quality), balanced (larger file size but faster), normal (standard)')
+    parser.add_argument('--output', default='outputs/debate_video.mp4', help='Output file path')
+    parser.add_argument('--batch-size', type=int, default=10, help='Number of clips to process in each batch')
+    parser.add_argument('--debug-timing', action='store_true', help='Show timing debug info in video')
+    
+    args = parser.parse_args()
+    
+    # Set a global debug flag for use in other modules
+    import utils.video_utils
+    utils.video_utils.DEBUG_TIMING = getattr(args, 'debug_timing', False)
+    
+    create_debate_video(output_path=args.output, mode=args.mode, batch_size=args.batch_size)

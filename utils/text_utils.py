@@ -41,111 +41,78 @@ def wrap_text(text, font, max_width):
     
     return lines
 
-def split_text_into_smaller_parts(text):
+def split_text_into_smaller_parts(text: str, max_chars: int = 40) -> list:
     """
     Split text into smaller parts (sentences or parts of sentences) for better subtitle timing.
     
-    Creates longer, more natural chunks for better speaker tracking while still being
-    appropriate for subtitle display.
+    Args:
+        text: The text to split
+        max_chars: Maximum number of characters per segment that's
+                  appropriate for subtitle display.
     
     Returns a list of text chunks optimized for subtitle display.
     """
-    # First, split by sentence endings (., !, ?)
-    sentence_delimiters = ['. ', '! ', '? ']
+    if not text:
+        return []
+    
+    # First, try to split by sentences
+    sentence_enders = ['. ', '! ', '? ', '.\n', '!\n', '?\n', ':"', '."']
     sentences = []
-    current_text = text
+    last_end = 0
     
-    # Extract sentences
-    for delimiter in sentence_delimiters:
-        parts = current_text.split(delimiter)
-        for i in range(len(parts) - 1):
-            sentences.append(parts[i] + delimiter.rstrip())
-        current_text = parts[-1]
+    # Find all sentence endings
+    for i in range(len(text) - 1):
+        for ender in sentence_enders:
+            if i + len(ender) <= len(text) and text[i:i+len(ender)].startswith(ender):
+                sentences.append(text[last_end:i+1])
+                last_end = i + 1
+                while last_end < len(text) and text[last_end] in [' ', '\n']:
+                    last_end += 1
+                break
     
-    # Add the last part if it's not empty
-    if current_text.strip():
-        sentences.append(current_text.strip())
+    # Add the last part if there's any remaining text
+    if last_end < len(text):
+        sentences.append(text[last_end:])
     
-    # Combine short sentences and split long ones to create balanced chunks
-    max_words_per_segment = 20  # Increased from 8 to 20 for better chunking
-    min_words_per_segment = 8   # New parameter for minimum chunk size
+    # If no sentences were found or we only have one sentence, split by commas, colons, or semicolons
+    if len(sentences) <= 1:
+        for sentence in sentences[:]:  # Use a copy of the list
+            for separator in [', ', '; ', ': ']:
+                parts = sentence.split(separator)
+                if len(parts) > 1:
+                    sentences = []
+                    for i, part in enumerate(parts):
+                        if i < len(parts) - 1:
+                            sentences.append(part + separator)
+                        else:
+                            sentences.append(part)
+                    break
     
+    # If we still have long sentences, break them up further
     final_segments = []
-    current_segment = ""
-    current_word_count = 0
-    
     for sentence in sentences:
-        words = sentence.split()
-        sentence_word_count = len(words)
-        
-        # Case 1: If adding this sentence doesn't exceed max words, add it to current segment
-        if current_word_count + sentence_word_count <= max_words_per_segment:
-            current_segment += (" " if current_segment else "") + sentence
-            current_word_count += sentence_word_count
+        if len(sentence) <= max_chars:
+            final_segments.append(sentence)
+        else:
+            # Break up by words while respecting max_chars
+            words = sentence.split(' ')
+            current_segment = ""
             
-            # If we've reached a good size, create a segment
-            if current_word_count >= min_words_per_segment:
-                final_segments.append(current_segment)
-                current_segment = ""
-                current_word_count = 0
-                
-        # Case 2: If this sentence alone is longer than max words, split it intelligently
-        elif sentence_word_count > max_words_per_segment:
-            # First add any existing content as a segment if it's not empty
+            for word in words:
+                if len(current_segment) + len(word) + 1 <= max_chars:
+                    if current_segment:
+                        current_segment += " " + word
+                    else:
+                        current_segment = word
+                else:
+                    # Current segment is full, start a new one
+                    if current_segment:
+                        final_segments.append(current_segment)
+                    current_segment = word
+            
+            # Add the last segment if there's any remaining text
             if current_segment:
                 final_segments.append(current_segment)
-                current_segment = ""
-                current_word_count = 0
-            
-            # Try to split by natural breaks like commas first
-            comma_parts = sentence.split(', ')
-            
-            if len(comma_parts) > 1:
-                # Process comma-separated parts
-                part_segment = ""
-                part_word_count = 0
-                
-                for part_idx, part in enumerate(comma_parts):
-                    part_words = part.split()
-                    part_word_count_temp = len(part_words)
-                    
-                    # If adding this part doesn't exceed max, add it
-                    if part_word_count + part_word_count_temp <= max_words_per_segment:
-                        separator = ", " if part_segment else ""
-                        part_segment += separator + part
-                        part_word_count += part_word_count_temp
-                    else:
-                        # Finalize current part segment if it meets minimum size
-                        if part_segment and part_word_count >= min_words_per_segment:
-                            final_segments.append(part_segment)
-                        
-                        # Start new segment with current part
-                        part_segment = part
-                        part_word_count = part_word_count_temp
-                
-                # Add any remaining part segment
-                if part_segment:
-                    final_segments.append(part_segment)
-            else:
-                # If no natural breaks, split by word count but try to keep phrases together
-                for i in range(0, sentence_word_count, max_words_per_segment):
-                    chunk_words = words[i:min(i + max_words_per_segment, sentence_word_count)]
-                    chunk_text = ' '.join(chunk_words)
-                    final_segments.append(chunk_text)
-        
-        # Case 3: If adding this sentence would exceed max words but we have some content
-        else:
-            # Add the current segment if it meets minimum size
-            if current_segment and current_word_count >= min_words_per_segment:
-                final_segments.append(current_segment)
-            
-            # Start a new segment with this sentence
-            current_segment = sentence
-            current_word_count = sentence_word_count
-    
-    # Add any remaining content if it's not empty
-    if current_segment:
-        final_segments.append(current_segment)
     
     # Ensure no empty segments
     final_segments = [segment.strip() for segment in final_segments if segment.strip()]
@@ -157,11 +124,8 @@ def split_text_into_smaller_parts(text):
             curr_segment = final_segments[i]
             next_segment = final_segments[i + 1]
             
-            curr_words = len(curr_segment.split())
-            next_words = len(next_segment.split())
-            
-            # If current segment is very short, try to merge with next
-            if curr_words < min_words_per_segment and curr_words + next_words <= max_words_per_segment:
+            # If combining them would still be under max_chars, merge them
+            if len(curr_segment) + len(next_segment) + 1 <= max_chars:
                 final_segments[i] = curr_segment + " " + next_segment
                 final_segments.pop(i + 1)
             else:
