@@ -127,16 +127,34 @@ class AIDebater:
         summary = summary.replace('"', '').replace("'", "")
         return summary
     
-    def debate(self, ground_statement: str, generate_audio: bool = True, use_existing: bool = False, jane_first: bool = True) -> List[str]:
-        if use_existing:
+    def debate(self, ground_statement: str, generate_audio: bool = True, use_existing_scripts: bool = False,
+               use_existing_audios: bool = False, jane_first: bool = True) -> List[str]:
+        """Conduct an AI debate between Jane and Valentino.
+
+        Args:
+            ground_statement: The topic to debate
+            generate_audio: Whether to generate audio files
+            use_existing_scripts: Use an existing debate.txt file instead of generating a new debate
+            use_existing_audios: Use existing audio files in outputs/audio_output, skipping TTS generation
+            jane_first: Whether Jane speaks first (default) or Valentino
+
+        Returns:
+            List of debate lines
+        """
+        if use_existing_scripts:
             print("Using existing debate.txt file for audio generation...")
             reformat_debate_file()
-            if generate_audio:
+            if generate_audio and not use_existing_audios:
                 print("\nGenerating audio version of the debate from existing debate.txt file...")
                 asyncio.run(process_debate())
-                # Generate video after audio processing is complete
+            elif use_existing_audios:
+                print("\nUsing existing audio files. Skipping audio generation...")
+                
+            # Generate video after audio processing is complete (or using existing audio)
+            if generate_audio or use_existing_audios:
                 print("\nGenerating video visualization of the debate...")
                 create_debate_video()
+                
             with open('outputs/debate.txt', 'r', encoding='utf-8') as f:
                 lines = [line.strip() for line in f if line.strip()]
             return lines
@@ -196,11 +214,11 @@ class AIDebater:
             second_prompt = f"Counter this argument in a single coherent paragraph: {first_response}. Be concise and express your complete argument in one paragraph only."
             
             # Add hint about surrendering as rounds progress - stronger encouragement for the second debater
-            if round_num >= 5 and round_num < 10:
+            if round_num >= 4 and round_num < 7:
                 second_prompt += " Try to find strong counterarguments even if challenging. Or you can surrender if you truly cannot defend your position after careful consideration."
-            elif round_num >= 10 and round_num < 15:
+            elif round_num >= 7 and round_num < 10:
                 second_prompt += f" We are at round {round_num} now. The debate has gone on for quite long. If you find yourself repeatedly making similar points or struggling to find new angles, this is a strong indication you should surrender. A wise debater knows when to concede to a stronger argument."
-            elif round_num >= 15:
+            elif round_num >= 10:
                 second_prompt += f" This debate has reached round {round_num}, which is extremely long. At this point, if you haven't found a decisive winning argument, you MUST seriously evaluate surrendering. Continuing without new substantial points suggests you should concede. Please strongly consider surrendering now if you cannot make a breakthrough argument."
                 
             second_response = self.generate_response(second_prompt, second_debater)
@@ -221,22 +239,26 @@ class AIDebater:
                 break
             
             # Add safety check for extremely long debates
-            if round_num >= 50:  # Arbitrary large number as safety limit
-                print("\nDebate has gone on for too long (50 rounds). Ending as a draw.")
+            if round_num >= 20:  # Arbitrary large number as safety limit
+                print("\nDebate has gone on for too long (20 rounds). Ending as a draw.")
                 with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
-                    f.write(f"Result: The debate continued for 50 rounds with no surrender. It's a draw!\n")
+                    f.write(f"Result: The debate continued for 20 rounds with no surrender. It's a draw!\n")
                 break
 
         # Reformat the debate file for consistent formatting
         reformat_debate_file()
         
-        # Generate audio version of the debate if requested
-        if generate_audio:
+        # Generate audio version of the debate if requested and not using existing audio
+        if generate_audio and not use_existing_audios:
             print("\nGenerating audio version of the debate...")
             asyncio.run(process_debate())
-            # Generate video after audio processing is complete
+        elif use_existing_audios:
+            print("\nUsing existing audio files. Skipping audio generation...")
+            
+        # Generate video after audio processing (or using existing audio)
+        if generate_audio or use_existing_audios:
             print("\nGenerating video visualization of the debate...")
-            create_debate_video()
+            create_debate_video(output_path='outputs/debate.mp4')
         
         # Prepare complete history for return
         full_history = [ground_statement] + list(self.debate_history)
@@ -262,4 +284,6 @@ class AIDebater:
 if __name__ == "__main__":
     debater = AIDebater()
     ground_statement = "AI-generated art is soulless and steals from artists' work and livelihood; therefore, it should not exist."
-    debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)
+    
+    # Update the main method to include the new parameter option
+    debate_results = debater.debate(ground_statement, use_existing_scripts=True, use_existing_audios=False, jane_first=False)

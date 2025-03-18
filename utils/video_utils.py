@@ -254,15 +254,18 @@ def fix_video_duration(clip, index):
     # Simply return the clip without modification
     return clip
 
-def create_segment_video(segment_index, speaker, text, audio_file, mode='normal'):
+def create_segment_video(segment_index, speaker, text, audio_file, mode='slow', temp_dir=None):
     """Creates a video clip for a single segment."""
+    # Use provided temp_dir or default to PROJECT_TEMP_DIR
+    temp_dir = temp_dir or PROJECT_TEMP_DIR
+    
     duration = max(get_segment_duration(audio_file), 3.0)
     timing_segments = get_segment_timing(audio_file)
     
     # Generate frames with timing that aligns precisely with audio
     frames = []
-    # Higher frame rate for better synchronization
-    frames_per_second = 5 if mode == 'normal' else (3 if mode == 'balanced' else 2)
+    # Higher frame rate for better quality in slow mode, lower for fast mode
+    frames_per_second = 5 if mode == 'slow' else 2
     total_frames = max(int(duration * frames_per_second), 1)
     time_step = duration / total_frames
     
@@ -304,15 +307,11 @@ def create_segment_video(segment_index, speaker, text, audio_file, mode='normal'
             print(f"Error creating fallback clip for segment {segment_index}: {str(e)}")
             return None
 
-def write_temp_video(clip, index, num_cores, mode='normal'):
-    """Writes a single clip to a temporary file.
+def write_temp_video(clip, index, num_cores, mode='slow', temp_dir=None):
+    """Writes a single clip to a temporary file."""
+    # Use provided temp_dir or default to PROJECT_TEMP_DIR
+    temp_dir = temp_dir or PROJECT_TEMP_DIR
     
-    Args:
-        clip: MoviePy video clip
-        index: Clip index
-        num_cores: Number of CPU cores to use
-        mode: 'fast', 'balanced', or 'normal' encoding mode
-    """
     temp_file = os.path.join(TEMP_FRAMES_DIR, f"seg_{index:03d}.mp4")
         
     try:
@@ -328,31 +327,17 @@ def write_temp_video(clip, index, num_cores, mode='normal'):
                 'crf': 28,  # Lower quality, smaller file
                 'extra_params': []
             },
-            'balanced': {
-                'preset': 'veryfast',
-                'crf': 22,  # Good quality, larger file
-                'extra_params': ["-tune", "zerolatency"]
-            },
-            'normal': {
+            'slow': {
                 'preset': 'medium',
-                'crf': 23,  # Default quality
+                'crf': 23,  # Best quality
                 'extra_params': []
             }
         }
         
-        config = encoding_configs.get(mode, encoding_configs['normal'])
+        config = encoding_configs.get(mode, encoding_configs['slow'])
         
         # Check for hardware acceleration support
         hw_accel_params = []
-        if mode == 'balanced':
-            # Try to use hardware acceleration if available
-            # NVIDIA GPU (NVENC)
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    hw_accel_params = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-            except ImportError:
-                pass
         
         # Combine all ffmpeg parameters
         ffmpeg_params = ["-avoid_negative_ts", "1", "-crf", str(config['crf'])] + hw_accel_params + config['extra_params']
@@ -367,7 +352,7 @@ def write_temp_video(clip, index, num_cores, mode='normal'):
             threads=num_cores,
             verbose=False,
             logger=None,
-            temp_audiofile=os.path.join(PROJECT_TEMP_DIR, f"temp_audio_{index}.m4a"),
+            temp_audiofile=os.path.join(temp_dir, f"temp_audio_{index}.m4a"),
             ffmpeg_params=ffmpeg_params
         )
         return temp_file
@@ -381,32 +366,27 @@ def write_temp_video(clip, index, num_cores, mode='normal'):
         except:
             pass
 
-def combine_video_segments(clips, output_file, mode='normal'):
-    """Combines multiple video clips into a final video.
+def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
+    """Combines multiple video clips into a final video."""
+    # Use provided temp_dir or default to PROJECT_TEMP_DIR
+    temp_dir = temp_dir or PROJECT_TEMP_DIR
     
-    Args:
-        clips: List of video clips to combine
-        output_file: Path to the output file
-        mode: 'fast', 'balanced', or 'normal' encoding mode
-    """
     # Get number of cores for processing
     num_cores = max(mp.cpu_count() - 1, 1)
     video_clips = []
     temp_files = []
     
     try:
-        print("\nCombining video segments...")
-        # Write clips one by one to temp files, then concatenate them
+        # Write each clip to a temporary file and concatenate them
         for i, clip in enumerate(clips):
             print(f"  - Writing segment {i+1}/{len(clips)}")
-            temp_file = write_temp_video(clip, i, num_cores, mode)
+            temp_file = write_temp_video(clip, i, num_cores, mode, temp_dir)
             if temp_file:
                 temp_files.append(temp_file)
-        clips.clear()
-        gc.collect()
         
-        print("Creating final video...")
-        # Read back all temp videos
+        print("Combining final video...")
+        
+        # Load all temp videos
         for i, temp_file in enumerate(temp_files):
             if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
                 try:
@@ -423,18 +403,12 @@ def combine_video_segments(clips, output_file, mode='normal'):
                 # Configure encoding parameters based on mode
                 encoding_configs = {
                     'fast': {
-                        'method': 'compose',
+                        'method': 'chain',
                         'preset': 'ultrafast',
                         'crf': 28,
                         'extra_params': []
                     },
-                    'balanced': {
-                        'method': 'compose',
-                        'preset': 'veryfast',
-                        'crf': 22,
-                        'extra_params': ["-tune", "zerolatency", "-movflags", "+faststart"]
-                    },
-                    'normal': {
+                    'slow': {
                         'method': 'chain',
                         'preset': 'medium',
                         'crf': 23,
@@ -442,7 +416,7 @@ def combine_video_segments(clips, output_file, mode='normal'):
                     }
                 }
                 
-                config = encoding_configs.get(mode, encoding_configs['normal'])
+                config = encoding_configs.get(mode, encoding_configs['slow'])
                 concat_method = config['method']
                 print(f"Using concatenation method: {concat_method}")
                 final_clip = concatenate_videoclips(video_clips, method=concat_method)
@@ -469,7 +443,7 @@ def combine_video_segments(clips, output_file, mode='normal'):
                     threads=num_cores,
                     verbose=False,
                     logger=None,
-                    temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio.m4a"),
+                    temp_audiofile=os.path.join(temp_dir, "temp_final_audio.m4a"),
                     ffmpeg_params=ffmpeg_params
                 )
                 print(f"Video saved as: {output_file}")
@@ -490,7 +464,7 @@ def combine_video_segments(clips, output_file, mode='normal'):
             except:
                 pass
 
-def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores, mode='normal'):
+def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores, mode='slow'):
     """Try alternative concatenation methods if the primary method fails."""
     try:
         print("Retrying with different concatenation method: compose")
@@ -519,17 +493,13 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                     'preset': 'ultrafast',
                     'crf': 28,
                 },
-                'balanced': {
-                    'preset': 'veryfast',
-                    'crf': 22,
-                },
-                'normal': {
+                'slow': {
                     'preset': 'medium',
                     'crf': 23,
                 }
             }
             
-            config = encoding_configs.get(mode, encoding_configs['normal'])
+            config = encoding_configs.get(mode, encoding_configs['slow'])
             
             # Always use compose method for fallback
             final_clip = concatenate_videoclips(video_clips, method="compose")
@@ -546,7 +516,7 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                 threads=num_cores,
                 verbose=False,
                 logger=None,
-                temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio_retry.m4a"),
+                temp_audiofile=os.path.join(temp_dir, "temp_final_audio_retry.m4a"),
                 ffmpeg_params=ffmpeg_params
             )
             print(f"Video saved as: {output_file} (retry method)")

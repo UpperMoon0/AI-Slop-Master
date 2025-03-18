@@ -4,10 +4,9 @@ import numpy as np
 import moviepy.config as mpconfig
 from PIL import ImageFont
 
-# Configure MoviePy to use a custom temp folder to avoid filling up C drive
+# Remove custom temp folder configuration - let the system use default locations
 PROJECT_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'moviepy_temp')
 os.makedirs(PROJECT_TEMP_DIR, exist_ok=True)
-mpconfig.change_settings({"TEMP_DIR": PROJECT_TEMP_DIR})
 
 # Video generation constants
 VIDEO_WIDTH = 1280

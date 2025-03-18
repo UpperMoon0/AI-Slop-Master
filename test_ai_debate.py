@@ -102,7 +102,7 @@ AI Debater 2: Counter argument"""
         with patch('asyncio.run') as mock_run:  # Mock asyncio.run instead of process_debate
             with patch('ai_debate.create_debate_video'):
                 debater = AIDebater()
-                results = debater.debate("Test", use_existing=True)
+                results = debater.debate("Test", use_existing_scripts=True)
                 assert len(results) > 0
                 mock_run.assert_called_once()
 

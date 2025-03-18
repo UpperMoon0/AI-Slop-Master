@@ -3,20 +3,19 @@ import gc
 import time
 import multiprocessing as mp
 from tqdm import tqdm
-from moviepy.editor import VideoFileClip  # Add this import
+from moviepy.editor import VideoFileClip
 
 from utils.file_utils import parse_debate_file, cleanup_temp_files
 from utils.audio_utils import get_segment_audio_file
 from utils.video_utils import create_segment_video, combine_video_segments
 from config import TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
 
-def create_debate_video(output_path='outputs/debate_video.mp4', mode='balanced', batch_size=10):
+def create_debate_video(output_path='outputs/debate.mp4', mode='fast', batch_size=10):
     """Create a video visualization of the debate with audio.
     
     Args:
         output_path: Path where the final video will be saved
-        mode: 'fast' (lowest quality, fastest), 'balanced' (larger file, good quality, faster), 
-              or 'normal' (standard quality, slower)
+        mode: 'fast' (fastest, lower quality) or 'slow' (best quality, slower)
         batch_size: Number of clips to process in each batch for memory efficiency
     """
     print("\n=== Starting Video Generation Process ===")
@@ -54,8 +53,8 @@ def create_debate_video(output_path='outputs/debate_video.mp4', mode='balanced',
                 print(f"Warning: No audio file found for segment {i}")
                 continue
             
-            # Create video clip for this segment
-            clip = create_segment_video(i, speaker, text, audio_file, mode=mode)
+            # Create video clip for this segment with temp_dir
+            clip = create_segment_video(i, speaker, text, audio_file, mode=mode, temp_dir=PROJECT_TEMP_DIR)
             if clip:
                 segment_clips.append(clip)
             
@@ -63,7 +62,7 @@ def create_debate_video(output_path='outputs/debate_video.mp4', mode='balanced',
             if len(segment_clips) >= batch_size:
                 batch_output = os.path.join(PROJECT_TEMP_DIR, f"batch_{i//batch_size}.mp4")
                 print(f"  - Processing batch {i//batch_size + 1}...")
-                combine_video_segments(segment_clips, batch_output, mode=mode)
+                combine_video_segments(segment_clips, batch_output, mode=mode, temp_dir=PROJECT_TEMP_DIR)
                 segment_clips = [VideoFileClip(batch_output)]
                 gc.collect()  # Force garbage collection to free memory
             
@@ -78,15 +77,14 @@ def create_debate_video(output_path='outputs/debate_video.mp4', mode='balanced',
         concat_start = time.time()
         
         quality_descriptions = {
-            'fast': "low quality (fastest preview)",
-            'balanced': "good quality (larger file size)",
-            'normal': "high quality (standard)"
+            'fast': "lower quality (fastest processing)",
+            'slow': "best quality (standard)"
         }
         print(f"  - This step may take several minutes depending on video length and complexity")
         print(f"  - Generating {quality_descriptions.get(mode, 'standard quality')} video")
         
         if segment_clips:
-            combine_video_segments(segment_clips, output_path, mode=mode)
+            combine_video_segments(segment_clips, output_path, mode=mode, temp_dir=PROJECT_TEMP_DIR)
             print(f"  √ Concatenated clips in {time.time() - concat_start:.2f} seconds")
         else:
             print("No clips were created. Cannot generate final video.")
@@ -109,21 +107,3 @@ def create_debate_video(output_path='outputs/debate_video.mp4', mode='balanced',
     seconds = total_time % 60
     print(f"\n=== Video Generation Complete ===")
     print(f"Total processing time: {minutes} minutes {seconds:.2f} seconds")
-
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Generate debate video with options.')
-    parser.add_argument('--mode', choices=['fast', 'balanced', 'normal'], default='normal',
-                      help='Video generation mode: fast (lowest quality), balanced (larger file size but faster), normal (standard)')
-    parser.add_argument('--output', default='outputs/debate_video.mp4', help='Output file path')
-    parser.add_argument('--batch-size', type=int, default=10, help='Number of clips to process in each batch')
-    parser.add_argument('--debug-timing', action='store_true', help='Show timing debug info in video')
-    
-    args = parser.parse_args()
-    
-    # Set a global debug flag for use in other modules
-    import utils.video_utils
-    utils.video_utils.DEBUG_TIMING = getattr(args, 'debug_timing', False)
-    
-    create_debate_video(output_path=args.output, mode=args.mode, batch_size=args.batch_size)
