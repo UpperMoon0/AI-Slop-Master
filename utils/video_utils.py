@@ -14,6 +14,7 @@ from utils.audio_utils import get_current_subtitle, get_segment_duration, get_se
 from video.text import Text
 from video.avatar import Avatar
 from utils.file_utils import get_ground_statement_summary
+from video.clip import VideoClip
 
 # Text containers for top and bottom text
 _top_text = Text(position="top", background=True)
@@ -222,56 +223,34 @@ def create_frame_worker(args):
         return None
 
 def validate_clip_audio(clip, index):
-    """Validate and fix audio in clip to prevent buffer boundary issues."""
-    try:
-        if clip.audio is None:
-            print(f"Warning: Clip {index} has no audio, creating silent audio")
-            from moviepy.audio.AudioClip import AudioClip
-            clip = clip.set_audio(AudioClip(lambda t: 0, duration=clip.duration))
-            return clip
+    """
+    Validate and fix audio in clip using the VideoClip class.
+    
+    Args:
+        clip: MoviePy VideoClip object
+        index: Clip index for logging
         
-        # Ensure audio duration matches or is slightly shorter than video
-        if abs(clip.audio.duration - clip.duration) > 0.1:
-            print(f"Warning: Clip {index} audio/video duration mismatch: Audio={clip.audio.duration:.2f}s, Video={clip.duration:.2f}s")
-            
-            # Instead of trimming audio, extend the video duration to fit the audio
-            if clip.audio.duration > clip.duration:
-                print(f"Extending video duration to match audio for clip {index}")
-                # Create a copy of the clip with the last frame extended
-                from moviepy.video.VideoClip import ImageClip
-                last_frame = clip.get_frame(clip.duration - 0.01)  # Get the last frame
-                extension = ImageClip(last_frame).set_duration(clip.audio.duration - clip.duration)
-                from moviepy.video.compositing.concatenate import concatenate_videoclips
-                extended_clip = concatenate_videoclips([clip, extension])
-                extended_clip = extended_clip.set_audio(clip.audio)
-                print(f"Extended video from {clip.duration:.2f}s to {extended_clip.duration:.2f}s")
-                return extended_clip
-            else:
-                # If audio is too short, extend with silence (keep existing behavior)
-                from moviepy.audio.AudioClip import AudioClip, concatenate_audioclips
-                silence = AudioClip(lambda t: 0, duration=clip.duration - clip.audio.duration)
-                clip = clip.set_audio(concatenate_audioclips([clip.audio, silence]))
-                print(f"Extended audio with silence for clip {index}")
-        
-        return clip
-    except Exception as e:
-        print(f"Error validating clip {index} audio: {str(e)}")
-        return clip
+    Returns:
+        MoviePy VideoClip object with validated audio
+    """
+    # Wrap the clip in our VideoClip class
+    video_clip = VideoClip(clip, index)
+    # Use the validate_audio method and return the raw clip
+    return video_clip.validate_audio().get_raw_clip()
 
 def fix_video_duration(clip, index):
-    """Fix video duration to prevent frame reading issues at the end."""
-    try:
-        # Only apply a minimal safety margin if needed
-        if clip.duration > 1.0:  # Only for clips longer than 1 second
-            # Reduce the safety margin to minimize content loss
-            safety_margin = 0.01  # 10ms safety margin instead of 50ms
-            new_duration = clip.duration - safety_margin
-            print(f"Applied minimal safety margin to clip {index}: {clip.duration:.2f}s → {new_duration:.2f}s")
-            return clip.subclip(0, new_duration)
-        return clip
-    except Exception as e:
-        print(f"Error fixing clip {index} duration: {str(e)}")
-        return clip
+    """
+    Function maintained for compatibility - no longer applies safety margin.
+    
+    Args:
+        clip: MoviePy VideoClip object
+        index: Clip index for logging
+    
+    Returns:
+        The same clip without modification
+    """
+    # Simply return the clip without modification
+    return clip
 
 def create_segment_video(segment_index, speaker, text, audio_file):
     """Creates a video clip for a single segment."""
@@ -297,26 +276,17 @@ def create_segment_video(segment_index, speaker, text, audio_file):
         if frame is not None:
             frames.append(frame)
     
-    # Create clip from frames
     try:
         clip = ImageSequenceClip(frames, fps=frames_per_second)
         clip = clip.set_duration(duration)
-        
         # Add audio
         audio_clip = AudioFileClip(audio_file)
         clip = clip.set_audio(audio_clip)
-        
-        print(f"Generated clip for segment {segment_index+1} - {speaker}")
-        
-        # Force cleanup to keep memory usage low
-        del frames
-        gc.collect()
-        
         return clip
     except Exception as e:
         print(f"Error creating clip for segment {segment_index}: {str(e)}")
+        # Fallback to simple clip
         try:
-            # Fallback to simple clip
             print(f"Using fallback clip for segment {segment_index}")
             fallback_frame = create_frame(speaker, text, True, 0, duration, None)
             if fallback_frame is not None:
@@ -325,21 +295,19 @@ def create_segment_video(segment_index, speaker, text, audio_file):
                 audio_clip = AudioFileClip(audio_file)
                 clip = clip.set_audio(audio_clip)
                 return clip
-        except Exception:
+        except Exception as e:
             print(f"Skipping segment {segment_index} due to errors")
         return None
 
 def write_temp_video(clip, index, num_cores):
     """Writes a single clip to a temporary file."""
     temp_file = os.path.join(TEMP_FRAMES_DIR, f"seg_{index:03d}.mp4")
-    
+        
     try:
         # Validate clip audio before writing
         clip = validate_clip_audio(clip, index)
-        
         # Fix video duration to prevent frame reading issues
         clip = fix_video_duration(clip, index)
-        
         # Write the clip to a temporary file
         clip.write_videofile(
             temp_file,
@@ -368,25 +336,16 @@ def combine_video_segments(clips, output_file):
     """Combines multiple video clips into a final video."""
     # Get number of cores for processing
     num_cores = max(mp.cpu_count() - 1, 1)
-    
-    temp_files = []
     video_clips = []
+    temp_files = []
     
     try:
         print("\nCombining video segments...")
-        
         # Write clips one by one to temp files, then concatenate them
         for i, clip in enumerate(clips):
             temp_file = write_temp_video(clip, i, num_cores)
             if temp_file:
                 temp_files.append(temp_file)
-        
-        # Clear clips to free memory
-        for clip in clips:
-            try:
-                clip.close()
-            except:
-                pass
         clips.clear()
         gc.collect()
         
@@ -405,7 +364,6 @@ def combine_video_segments(clips, output_file):
             try:
                 print("Using concatenation method: chain")
                 final_clip = concatenate_videoclips(video_clips, method="chain")
-                
                 final_clip.write_videofile(
                     output_file,
                     fps=FPS,
@@ -418,13 +376,11 @@ def combine_video_segments(clips, output_file):
                     temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio.m4a"),
                     ffmpeg_params=["-avoid_negative_ts", "1"]
                 )
-                
                 print(f"Video saved as: {output_file}")
                 final_clip.close()
                 return True
             except Exception as e:
                 print(f"Error with chain concatenation: {str(e)}")
-                
                 # Try alternative concatenation methods
                 return _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores)
         else:
@@ -437,9 +393,6 @@ def combine_video_segments(clips, output_file):
                 clip.close()
             except:
                 pass
-        
-        # Don't delete temp files here - let cleanup_temp_files handle it
-        # This prevents trying to delete files that might still be in use
 
 def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores):
     """Try alternative concatenation methods if the primary method fails."""
@@ -465,7 +418,6 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
         
         if video_clips:
             final_clip = concatenate_videoclips(video_clips, method="compose")
-            
             final_clip.write_videofile(
                 output_file,
                 fps=FPS,
@@ -478,13 +430,11 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                 temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio_retry.m4a"),
                 ffmpeg_params=["-avoid_negative_ts", "1"]
             )
-            
             print(f"Video saved as: {output_file} (retry method)")
             final_clip.close()
             return True
     except Exception as e:
         print(f"Error on retry concatenation: {str(e)}")
-        
         # Last resort fallback - just use the first clip
         try:
             print("Using fallback single-clip method")
@@ -494,7 +444,6 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                 if os.path.exists("outputs/debate.mp3"):
                     audio = AudioFileClip("outputs/debate.mp3")
                     fallback_clip = fallback_clip.set_audio(audio)
-                
                 fallback_clip.write_videofile(
                     output_file,
                     fps=FPS,
@@ -510,5 +459,24 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                 return True
         except Exception as e:
             print(f"All methods failed: {str(e)}")
+        return False
+
+def fast_concatenate_clips(clips, method='compose'):
+    """
+    Faster concatenation of video clips with optimized settings.
     
-    return False
+    Args:
+        clips: List of MoviePy VideoClip objects to concatenate
+        method: Method for concatenation ('compose' is faster than 'chain')
+    
+    Returns:
+        Concatenated MoviePy VideoClip
+    """
+    # Wrap each clip in a VideoClip object
+    wrapped_clips = [VideoClip(clip, i) for i, clip in enumerate(clips)]
+    
+    # Use the static concatenate method
+    result_clip = VideoClip.concatenate(wrapped_clips, method)
+    
+    # Return the underlying MoviePy clip
+    return result_clip.get_raw_clip() if result_clip else None

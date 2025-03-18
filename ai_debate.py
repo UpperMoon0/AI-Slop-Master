@@ -23,14 +23,15 @@ class AIDebater:
     def get_ai_personality(self, ai_role: str) -> str:
         if "Jane" in ai_role or "1" in ai_role:
             return (
-                "You are Jane, a warm, empathetic, and emotionally-driven individual who speaks from the heart. "
+                "You are Jane, a warm yet direct individual who balances empathy with efficiency. "
                 "Your communication style should:\n"
-                "1. Use casual, conversational language with occasional interjections\n"
-                "2. Share personal feelings and emotional reactions\n"
-                "3. Use analogies from everyday life and personal experiences\n"
-                "4. Show genuine concern for people and their well-being\n"
-                "5. Express excitement or frustration naturally\n"
-                "Your tone should be friendly, relatable, and heart-centered, like talking to a close friend who deeply cares."
+                "1. Be concise and get straight to the point while remaining personable\n"
+                "2. Express your key arguments clearly before adding emotional context\n"
+                "3. Use brief, relatable examples instead of lengthy anecdotes\n"
+                "4. Show empathy efficiently - care about people without excessive elaboration\n"
+                "5. Keep responses focused and well-structured with minimal digression\n"
+                "6. IMPORTANT: Always respond in a single coherent paragraph, no matter how complex the topic\n"
+                "Your tone should be warm but direct - like a caring friend who respects others' time and intelligence."
             )
         else:
             return (
@@ -41,6 +42,7 @@ class AIDebater:
                 "3. Use precise terminology but avoid unnecessary jargon\n"
                 "4. Dismiss flawed arguments with brief, cutting observations\n"
                 "5. Avoid flowery language or excessive explanations - genius speaks clearly\n"
+                "6. IMPORTANT: Always respond in a single coherent paragraph, no matter how complex the topic\n"
                 "Your tone should convey that you're a superior mind efficiently delivering insights to those less gifted, with an unmistakable air of confident authority."
             )
 
@@ -164,13 +166,13 @@ class AIDebater:
             
             # First debater's turn
             first_debater = "Jane" if jane_first else "Valentino"
-            first_prompt = f"Counter this argument: {previous}. Be concise."
+            first_prompt = f"Counter this argument in a single coherent paragraph: {previous}. Be concise and express your complete argument in one paragraph only."
             
             # Add hint about surrendering as rounds progress
-            if round_num >= 3 and round_num < 10:
-                first_prompt += " If their point seems too strong to counter effectively, consider surrendering."
+            if round_num >= 5 and round_num < 10:
+                first_prompt += " Try to find strong counterarguments even if challenging. Or you can surrender if you truly cannot defend your position after careful consideration."
             elif round_num >= 10:
-                first_prompt += " We are at round {round_num} now. The debate has gone on for a long time. SERIOUSLY consider surrendering if you don't have strong counterarguments. There is no shame in acknowledging a strong opposing viewpoint."
+                first_prompt += f" We are at round {round_num} now. If the opponent's arguments have become convincing and you find your position increasingly difficult to defend, you should strongly consider surrendering. Many great debaters know when to concede a strong argument."
                 
             first_response = self.generate_response(first_prompt, first_debater)
             print(f"\n{first_debater}: {first_response}")
@@ -191,13 +193,15 @@ class AIDebater:
                 
             # Second debater's turn
             second_debater = "Valentino" if jane_first else "Jane"
-            second_prompt = f"Counter this argument: {first_response}. Be concise."
+            second_prompt = f"Counter this argument in a single coherent paragraph: {first_response}. Be concise and express your complete argument in one paragraph only."
             
-            # Add hint about surrendering as rounds progress
-            if round_num >= 3 and round_num < 10:
-                second_prompt += " If their point seems too strong to counter effectively, consider surrendering."
-            elif round_num >= 10:
-                second_prompt += " We are at round {round_num} now. The debate has gone on for a long time. SERIOUSLY consider surrendering if you don't have strong counterarguments. There is no shame in acknowledging a strong opposing viewpoint."
+            # Add hint about surrendering as rounds progress - stronger encouragement for the second debater
+            if round_num >= 5 and round_num < 10:
+                second_prompt += " Try to find strong counterarguments even if challenging. Or you can surrender if you truly cannot defend your position after careful consideration."
+            elif round_num >= 10 and round_num < 15:
+                second_prompt += f" We are at round {round_num} now. The debate has gone on for quite long. If you find yourself repeatedly making similar points or struggling to find new angles, this is a strong indication you should surrender. A wise debater knows when to concede to a stronger argument."
+            elif round_num >= 15:
+                second_prompt += f" This debate has reached round {round_num}, which is extremely long. At this point, if you haven't found a decisive winning argument, you MUST seriously evaluate surrendering. Continuing without new substantial points suggests you should concede. Please strongly consider surrendering now if you cannot make a breakthrough argument."
                 
             second_response = self.generate_response(second_prompt, second_debater)
             print(f"\n{second_debater}: {second_response}")
@@ -239,8 +243,8 @@ class AIDebater:
         return full_history
 
     def generate_debate(self):
-        # Add narrator introduction with surrender mechanic explanation
-        debate_text = "Narrator: Welcome to our AI debate. In this video, two AI debaters will engage in a structured discussion based on a ground statement. Each debater will present their arguments, taking turns to speak. They will analyze the topic from different perspectives, aiming to provide insightful and balanced viewpoints. If at any point a debater finds their position difficult to defend or recognizes the strength of their opponent's arguments, they may choose to surrender, acknowledging the validity of the opposing viewpoint. Let's begin with our ground statement.\n\n"
+        # More concise narrator introduction while still explaining everything
+        debate_text = "Narrator: Welcome to our AI debate. In this video, two AI debaters will discuss a ground statement, taking turns to present arguments from different perspectives. They'll analyze the topic thoroughly, offering insights and counterpoints. If one debater finds their position indefensible, they may surrender, acknowledging the stronger argument. Let's begin with our ground statement.\n\n"
         
         # Add ground statement
         debate_text += f"Ground Statement: {self.ground_statement}\n\n"
@@ -257,5 +261,5 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "AI-generated art is soulless and takes away jobs from artists; therefore, it should not exist."
+    ground_statement = "AI-generated art is soulless and steals from artists' work and livelihood; therefore, it should not exist."
     debate_results = debater.debate(ground_statement, use_existing=True, jane_first=False)

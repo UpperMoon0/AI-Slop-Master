@@ -1,30 +1,44 @@
 import os
 import gc
+import time
 import multiprocessing as mp
+from tqdm import tqdm
 
 from utils.file_utils import parse_debate_file, cleanup_temp_files
 from utils.audio_utils import get_segment_audio_file
 from utils.video_utils import create_segment_video, combine_video_segments
 from config import TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
 
-def create_debate_video():
+def create_debate_video(output_path='outputs/debate_video.mp4'):
     """Create a video visualization of the debate with audio."""
+    print("\n=== Starting Video Generation Process ===")
+    start_time = time.time()
+    
     # Set process start method for Windows
     if os.name == 'nt':
         mp.set_start_method('spawn', force=True)
     
     # Parse the debate file
+    print("Step 1: Parsing dialogue segments...")
+    segment_start = time.time()
     dialogue_segments = parse_debate_file()
+    print(f"  √ Parsed {len(dialogue_segments)} dialogue segments in {time.time() - segment_start:.2f} seconds")
+    
     if not dialogue_segments:
         print("No dialogue segments found. Aborting video creation.")
         return
     
     try:
         # Process segments sequentially and create clips
+        print("\nStep 2: Generating video clips...")
+        clips_start = time.time()
         segment_clips = []
-        for i, segment in enumerate(dialogue_segments):
+        for i, segment in enumerate(tqdm(dialogue_segments, desc="Creating video segments")):
             speaker = segment["speaker"]
             text = segment["text"]
+            
+            print(f"  - Processing segment {i+1}/{len(dialogue_segments)}: {segment['type']} by {segment.get('speaker', 'N/A')}")
+            clip_generation_start = time.time()
             
             # Get audio file for this segment
             audio_file = get_segment_audio_file(i)
@@ -36,10 +50,20 @@ def create_debate_video():
             clip = create_segment_video(i, speaker, text, audio_file)
             if clip:
                 segment_clips.append(clip)
+            
+            if (i + 1) % 5 == 0 or i == len(dialogue_segments) - 1:
+                print(f"  - Video progress: {i+1}/{len(dialogue_segments)} segments ({((i+1)/len(dialogue_segments))*100:.1f}%)")
+                print(f"  - Elapsed time: {time.time() - start_time:.2f} seconds")
+        
+        print(f"  √ Generated {len(segment_clips)} video clips in {time.time() - clips_start:.2f} seconds")
         
         # Combine all segment clips into final video
+        print("\nStep 3: Concatenating video clips...")
+        concat_start = time.time()
+        print("  - This step may take several minutes depending on video length and complexity")
         if segment_clips:
-            combine_video_segments(segment_clips, "outputs/debate.mp4")
+            combine_video_segments(segment_clips, output_path)
+            print(f"  √ Concatenated clips in {time.time() - concat_start:.2f} seconds")
         else:
             print("No clips were created. Cannot generate final video.")
     
@@ -48,7 +72,6 @@ def create_debate_video():
     
     finally:
         # Give some time for all file handles to be released before cleanup
-        import time
         time.sleep(2)
         
         # Clean up temporary files
@@ -56,6 +79,12 @@ def create_debate_video():
         
         # Force garbage collection
         gc.collect()
+    
+    total_time = time.time() - start_time
+    minutes = int(total_time // 60)
+    seconds = total_time % 60
+    print(f"\n=== Video Generation Complete ===")
+    print(f"Total processing time: {minutes} minutes {seconds:.2f} seconds")
 
 if __name__ == "__main__":
     create_debate_video()
