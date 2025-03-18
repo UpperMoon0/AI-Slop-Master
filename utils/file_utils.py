@@ -21,8 +21,8 @@ def parse_debate_file():
                     continue
                 
                 # Extract the summary but don't include it in spoken dialogue
-                if line.startswith("Display Summary:"):
-                    _ground_statement_summary = line.replace("Display Summary:", "").strip()
+                if line.startswith("Summary:"):
+                    _ground_statement_summary = line.replace("Summary:", "").strip()
                     continue
                 
                 new_speaker = None
@@ -85,8 +85,8 @@ def get_ground_statement_summary():
         try:
             with open('outputs/debate.txt', 'r', encoding='utf-8') as f:
                 for line in f:
-                    if line.startswith("Display Summary:"):
-                        _ground_statement_summary = line.replace("Display Summary:", "").strip()
+                    if line.startswith("Summary:"):
+                        _ground_statement_summary = line.replace("Summary:", "").strip()
                         break
         except Exception as e:
             print(f"Error extracting ground statement summary: {e}")
@@ -148,3 +148,71 @@ def delete_with_retry(file_path, max_attempts=3, delay=1):
         except Exception as e:
             print(f"Error removing {file_path}: {e}")
             return False
+
+def reformat_debate_file(file_path='outputs/debate.txt'):
+    """
+    Reformat the debate.txt file to merge multi-line arguments into single lines.
+    Only keeps line breaks before official speaker/section identifiers.
+    
+    Args:
+        file_path: Path to the debate.txt file
+        
+    Returns:
+        bool: True if reformatting was successful, False otherwise
+    """
+    valid_prefixes = [
+        "Narrator:", 
+        "Ground Statement:", 
+        "Summary:", 
+        "AI Debater 1:", 
+        "AI Debater 2:", 
+        "Result:"
+    ]
+    
+    try:
+        # Read the entire file content
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Split into lines and process
+        lines = content.split('\n')
+        reformatted_lines = []
+        current_line = ""
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue  # Skip empty lines
+                
+            # Check if this line starts with a valid prefix
+            is_valid_start = any(line.startswith(prefix) for prefix in valid_prefixes)
+            
+            if is_valid_start:
+                # If we have accumulated content from previous speaker, save it
+                if current_line:
+                    reformatted_lines.append(current_line)
+                # Start a new line with this prefix
+                current_line = line
+            else:
+                # This is a continuation of the previous speaker's text
+                # Add a space and append to the current line
+                if current_line:
+                    current_line += " " + line
+                else:
+                    # Shouldn't normally happen, but handle just in case
+                    current_line = line
+        
+        # Add the last accumulated line if it exists
+        if current_line:
+            reformatted_lines.append(current_line)
+        
+        # Join all reformatted lines with newlines and write back to the file
+        reformatted_content = '\n'.join(reformatted_lines)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(reformatted_content)
+        
+        print(f"Successfully reformatted {file_path}")
+        return True
+    except Exception as e:
+        print(f"Error reformatting debate file: {str(e)}")
+        return False

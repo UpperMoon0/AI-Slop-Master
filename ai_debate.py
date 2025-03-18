@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import asyncio
 from debate_to_speech import process_debate
 from debate_to_video import create_debate_video
+from utils.file_utils import reformat_debate_file
 
 load_dotenv()
 
@@ -127,6 +128,7 @@ class AIDebater:
     def debate(self, ground_statement: str, generate_audio: bool = True, use_existing: bool = False, jane_first: bool = True) -> List[str]:
         if use_existing:
             print("Using existing debate.txt file for audio generation...")
+            reformat_debate_file()
             if generate_audio:
                 print("\nGenerating audio version of the debate from existing debate.txt file...")
                 asyncio.run(process_debate())
@@ -142,7 +144,7 @@ class AIDebater:
         
         # Generate a concise summary of the ground statement for display
         self.ground_statement_summary = self.summarize_ground_statement(ground_statement)
-        print(f"Display Summary: {self.ground_statement_summary}\n")
+        print(f"Summary: {self.ground_statement_summary}\n")
         
         self.debate_history.clear()
         
@@ -220,6 +222,9 @@ class AIDebater:
                 with open('outputs/debate.txt', 'a', encoding='utf-8') as f:
                     f.write(f"Result: The debate continued for 50 rounds with no surrender. It's a draw!\n")
                 break
+
+        # Reformat the debate file for consistent formatting
+        reformat_debate_file()
         
         # Generate audio version of the debate if requested
         if generate_audio:
@@ -242,7 +247,7 @@ class AIDebater:
         
         # Add the summarized ground statement for display during the debate
         if self.ground_statement_summary:
-            debate_text += f"Display Summary: {self.ground_statement_summary}\n\n"
+            debate_text += f"Summary: {self.ground_statement_summary}\n\n"
         
         # Write debate to file
         with open('outputs/debate.txt', 'w', encoding='utf-8') as f:

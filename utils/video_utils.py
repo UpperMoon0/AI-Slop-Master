@@ -62,8 +62,8 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
             _ground_statement_text = current_subtitle
             _has_seen_first_debater = False  # Reset this flag when we see ground statement
             _last_detected_speaker = "Narrator"  # Reset speaker tracking
-        elif "Display Summary:" in current_subtitle:
-            _ground_statement_summary = current_subtitle.replace("Display Summary:", "Topic:").strip()
+        elif "Summary:" in current_subtitle:
+            _ground_statement_summary = current_subtitle.replace("Summary:", "Topic:").strip()
         elif "Result:" in current_subtitle:
             _narrator_state = "postDebate"
             _last_detected_speaker = "Narrator"  # Reset speaker tracking
@@ -165,8 +165,8 @@ def create_frame(speaker, text, highlighted=False, current_time=0, total_duratio
         # During pre debate, show the narrator's text, including introduction and ground statement
         elif _narrator_state == "preDebate":
             if speaker == "Narrator" and current_subtitle:
-                # Skip "Display Summary:" as it's not meant to be spoken
-                if not "Display Summary:" in current_subtitle:
+                # Skip "Summary:" as it's not meant to be spoken
+                if not "Summary:" in current_subtitle:
                     # Show whatever the narrator is currently saying during preDebate
                     _top_text.update_text(current_subtitle)
         # During post debate, show the result
