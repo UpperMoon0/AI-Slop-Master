@@ -252,14 +252,23 @@ def fix_video_duration(clip, index):
     # Simply return the clip without modification
     return clip
 
-def create_segment_video(segment_index, speaker, text, audio_file):
-    """Creates a video clip for a single segment."""
+def create_segment_video(segment_index, speaker, text, audio_file, fast_mode=False):
+    """Creates a video clip for a single segment.
+    
+    Args:
+        segment_index: Index of the segment
+        speaker: Name of the speaker
+        text: Text content
+        audio_file: Path to the audio file
+        fast_mode: If True, use faster settings with lower quality
+    """
     duration = max(get_segment_duration(audio_file), 3.0)
     timing_segments = get_segment_timing(audio_file)
     
     # Generate frames with evenly distributed timestamps
     frames = []
-    frames_per_second = 2  # Generate frames at 2fps for smooth subtitles
+    # Use lower frame rate in fast mode
+    frames_per_second = 1 if fast_mode else 2
     total_frames = max(int(duration * frames_per_second), 1)
     time_step = duration / total_frames
     
@@ -296,11 +305,18 @@ def create_segment_video(segment_index, speaker, text, audio_file):
                 clip = clip.set_audio(audio_clip)
                 return clip
         except Exception as e:
-            print(f"Skipping segment {segment_index} due to errors")
-        return None
+            print(f"Error creating fallback clip for segment {segment_index}: {str(e)}")
+            return None
 
-def write_temp_video(clip, index, num_cores):
-    """Writes a single clip to a temporary file."""
+def write_temp_video(clip, index, num_cores, mode='normal'):
+    """Writes a single clip to a temporary file.
+    
+    Args:
+        clip: MoviePy video clip
+        index: Clip index
+        num_cores: Number of CPU cores to use
+        mode: 'fast', 'balanced', or 'normal' encoding mode
+    """
     temp_file = os.path.join(TEMP_FRAMES_DIR, f"seg_{index:03d}.mp4")
         
     try:
@@ -308,18 +324,55 @@ def write_temp_video(clip, index, num_cores):
         clip = validate_clip_audio(clip, index)
         # Fix video duration to prevent frame reading issues
         clip = fix_video_duration(clip, index)
+        
+        # Configure encoding parameters based on mode
+        encoding_configs = {
+            'fast': {
+                'preset': 'ultrafast',
+                'crf': 28,  # Lower quality, smaller file
+                'extra_params': []
+            },
+            'balanced': {
+                'preset': 'veryfast',
+                'crf': 22,  # Good quality, larger file
+                'extra_params': ["-tune", "zerolatency"]
+            },
+            'normal': {
+                'preset': 'medium',
+                'crf': 23,  # Default quality
+                'extra_params': []
+            }
+        }
+        
+        config = encoding_configs.get(mode, encoding_configs['normal'])
+        
+        # Check for hardware acceleration support
+        hw_accel_params = []
+        if mode == 'balanced':
+            # Try to use hardware acceleration if available
+            # NVIDIA GPU (NVENC)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    hw_accel_params = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+            except ImportError:
+                pass
+        
+        # Combine all ffmpeg parameters
+        ffmpeg_params = ["-avoid_negative_ts", "1", "-crf", str(config['crf'])] + hw_accel_params + config['extra_params']
+        
         # Write the clip to a temporary file
         clip.write_videofile(
             temp_file,
             fps=FPS,
             codec='libx264',
             audio_codec='aac',
-            preset='ultrafast',
+            preset=config['preset'],
             threads=num_cores,
             verbose=False,
             logger=None,
             temp_audiofile=os.path.join(PROJECT_TEMP_DIR, f"temp_audio_{index}.m4a"),
-            ffmpeg_params=["-avoid_negative_ts", "1"]
+            ffmpeg_params=ffmpeg_params
         )
         return temp_file
     except Exception as e:
@@ -332,8 +385,14 @@ def write_temp_video(clip, index, num_cores):
         except:
             pass
 
-def combine_video_segments(clips, output_file):
-    """Combines multiple video clips into a final video."""
+def combine_video_segments(clips, output_file, mode='normal'):
+    """Combines multiple video clips into a final video.
+    
+    Args:
+        clips: List of video clips to combine
+        output_file: Path to the output file
+        mode: 'fast', 'balanced', or 'normal' encoding mode
+    """
     # Get number of cores for processing
     num_cores = max(mp.cpu_count() - 1, 1)
     video_clips = []
@@ -343,7 +402,8 @@ def combine_video_segments(clips, output_file):
         print("\nCombining video segments...")
         # Write clips one by one to temp files, then concatenate them
         for i, clip in enumerate(clips):
-            temp_file = write_temp_video(clip, i, num_cores)
+            print(f"  - Writing segment {i+1}/{len(clips)}")
+            temp_file = write_temp_video(clip, i, num_cores, mode)
             if temp_file:
                 temp_files.append(temp_file)
         clips.clear()
@@ -354,7 +414,9 @@ def combine_video_segments(clips, output_file):
         for i, temp_file in enumerate(temp_files):
             if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
                 try:
-                    clip = VideoFileClip(temp_file, target_resolution=None, resize_algorithm='fast_bilinear')
+                    # Select resize algorithm based on mode
+                    resize_algo = 'fast_bilinear' if mode == 'fast' else 'bicubic'
+                    clip = VideoFileClip(temp_file, target_resolution=None, resize_algorithm=resize_algo)
                     clip = validate_clip_audio(clip, i)
                     video_clips.append(clip)
                 except Exception as e:
@@ -362,27 +424,66 @@ def combine_video_segments(clips, output_file):
         
         if video_clips:
             try:
-                print("Using concatenation method: chain")
-                final_clip = concatenate_videoclips(video_clips, method="chain")
+                # Configure encoding parameters based on mode
+                encoding_configs = {
+                    'fast': {
+                        'method': 'compose',
+                        'preset': 'ultrafast',
+                        'crf': 28,
+                        'extra_params': []
+                    },
+                    'balanced': {
+                        'method': 'compose',
+                        'preset': 'veryfast', 
+                        'crf': 22,
+                        'extra_params': ["-tune", "zerolatency", "-movflags", "+faststart"]
+                    },
+                    'normal': {
+                        'method': 'chain',
+                        'preset': 'medium',
+                        'crf': 23,
+                        'extra_params': []
+                    }
+                }
+                
+                config = encoding_configs.get(mode, encoding_configs['normal'])
+                concat_method = config['method']
+                
+                print(f"Using concatenation method: {concat_method}")
+                final_clip = concatenate_videoclips(video_clips, method=concat_method)
+                
+                # Hardware acceleration for final encoding
+                hw_accel_params = []
+                if mode == 'balanced':
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            hw_accel_params = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+                    except ImportError:
+                        pass
+                
+                # Combine all ffmpeg parameters
+                ffmpeg_params = ["-avoid_negative_ts", "1", "-crf", str(config['crf'])] + hw_accel_params + config['extra_params']
+                
                 final_clip.write_videofile(
                     output_file,
                     fps=FPS,
                     codec='libx264',
                     audio_codec='aac',
-                    preset='medium',
+                    preset=config['preset'],
                     threads=num_cores,
                     verbose=False,
                     logger=None,
                     temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio.m4a"),
-                    ffmpeg_params=["-avoid_negative_ts", "1"]
+                    ffmpeg_params=ffmpeg_params
                 )
                 print(f"Video saved as: {output_file}")
                 final_clip.close()
                 return True
             except Exception as e:
-                print(f"Error with chain concatenation: {str(e)}")
+                print(f"Error with {concat_method} concatenation: {str(e)}")
                 # Try alternative concatenation methods
-                return _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores)
+                return _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores, mode)
         else:
             print("No valid video clips were found.")
             return False
@@ -394,7 +495,7 @@ def combine_video_segments(clips, output_file):
             except:
                 pass
 
-def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores):
+def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores, mode='normal'):
     """Try alternative concatenation methods if the primary method fails."""
     try:
         print("Retrying with different concatenation method: compose")
@@ -417,18 +518,41 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                     print(f"Error loading clip on retry {temp_file}: {str(e)}")
         
         if video_clips:
+            # Configure encoding parameters based on mode (use more reliable settings for fallback)
+            encoding_configs = {
+                'fast': {
+                    'preset': 'ultrafast',
+                    'crf': 28,
+                },
+                'balanced': {
+                    'preset': 'veryfast',
+                    'crf': 22,
+                },
+                'normal': {
+                    'preset': 'medium',
+                    'crf': 23,
+                }
+            }
+            
+            config = encoding_configs.get(mode, encoding_configs['normal'])
+            
+            # Always use compose method for fallback
             final_clip = concatenate_videoclips(video_clips, method="compose")
+            
+            # Add CRF parameter for quality control
+            ffmpeg_params = ["-avoid_negative_ts", "1", "-crf", str(config['crf'])]
+            
             final_clip.write_videofile(
                 output_file,
                 fps=FPS,
                 codec='libx264',
                 audio_codec='aac',
-                preset='medium',
+                preset=config['preset'],
                 threads=num_cores,
                 verbose=False,
                 logger=None,
                 temp_audiofile=os.path.join(PROJECT_TEMP_DIR, "temp_final_audio_retry.m4a"),
-                ffmpeg_params=["-avoid_negative_ts", "1"]
+                ffmpeg_params=ffmpeg_params
             )
             print(f"Video saved as: {output_file} (retry method)")
             final_clip.close()
@@ -444,39 +568,29 @@ def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cor
                 if os.path.exists("outputs/debate.mp3"):
                     audio = AudioFileClip("outputs/debate.mp3")
                     fallback_clip = fallback_clip.set_audio(audio)
+                    
+                # Use fastest preset in this last resort scenario
+                preset = 'ultrafast'
                 fallback_clip.write_videofile(
                     output_file,
                     fps=FPS,
                     codec='libx264',
                     audio_codec='aac',
-                    preset='ultrafast',
+                    preset=preset,
                     threads=num_cores,
                     verbose=False,
                     logger=None
                 )
-                fallback_clip.close()
-                print(f"Video saved as: {output_file} (fallback method)")
-                return True
-        except Exception as e:
-            print(f"All methods failed: {str(e)}")
-        return False
 
-def fast_concatenate_clips(clips, method='compose'):
-    """
-    Faster concatenation of video clips with optimized settings.
-    
-    Args:
-        clips: List of MoviePy VideoClip objects to concatenate
-        method: Method for concatenation ('compose' is faster than 'chain')
-    
-    Returns:
-        Concatenated MoviePy VideoClip
-    """
-    # Wrap each clip in a VideoClip object
-    wrapped_clips = [VideoClip(clip, i) for i, clip in enumerate(clips)]
-    
-    # Use the static concatenate method
-    result_clip = VideoClip.concatenate(wrapped_clips, method)
-    
-    # Return the underlying MoviePy clip
-    return result_clip.get_raw_clip() if result_clip else None
+
+
+
+
+
+
+
+
+
+
+
+    # ...existing code...    """    Faster concatenation of video clips with optimized settings.    """def fast_concatenate_clips(clips, method='compose'):        return False            print(f"All methods failed: {str(e)}")        except Exception as e:                return True                print(f"Video saved as: {output_file} (fallback method)")                fallback_clip.close()        Args:        clips: List of MoviePy VideoClip objects to concatenate        method: Method for concatenation ('compose' is faster than 'chain')        Returns:        Concatenated MoviePy VideoClip    """    # Wrap each clip in a VideoClip object    wrapped_clips = [VideoClip(clip, i) for i, clip in enumerate(clips)]        # Use the static concatenate method    result_clip = VideoClip.concatenate(wrapped_clips, method)        # Return the underlying MoviePy clip    return result_clip.get_raw_clip() if result_clip else None

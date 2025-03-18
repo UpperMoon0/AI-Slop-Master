@@ -3,14 +3,22 @@ import gc
 import time
 import multiprocessing as mp
 from tqdm import tqdm
+from moviepy.editor import VideoFileClip  # Add this import
 
 from utils.file_utils import parse_debate_file, cleanup_temp_files
 from utils.audio_utils import get_segment_audio_file
 from utils.video_utils import create_segment_video, combine_video_segments
 from config import TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
 
-def create_debate_video(output_path='outputs/debate_video.mp4'):
-    """Create a video visualization of the debate with audio."""
+def create_debate_video(output_path='outputs/debate_video.mp4', mode='normal', batch_size=10):
+    """Create a video visualization of the debate with audio.
+    
+    Args:
+        output_path: Path where the final video will be saved
+        mode: 'fast' (lowest quality, fastest), 'balanced' (larger file, good quality, faster), 
+              or 'normal' (standard quality, slower)
+        batch_size: Number of clips to process in each batch for memory efficiency
+    """
     print("\n=== Starting Video Generation Process ===")
     start_time = time.time()
     
@@ -37,7 +45,7 @@ def create_debate_video(output_path='outputs/debate_video.mp4'):
             speaker = segment["speaker"]
             text = segment["text"]
             
-            print(f"  - Processing segment {i+1}/{len(dialogue_segments)}: {segment['type']} by {segment.get('speaker', 'N/A')}")
+            print(f"  - Processing segment {i+1}/{len(dialogue_segments)}: {speaker}")
             clip_generation_start = time.time()
             
             # Get audio file for this segment
@@ -47,22 +55,38 @@ def create_debate_video(output_path='outputs/debate_video.mp4'):
                 continue
             
             # Create video clip for this segment
-            clip = create_segment_video(i, speaker, text, audio_file)
+            clip = create_segment_video(i, speaker, text, audio_file, mode=mode)
             if clip:
                 segment_clips.append(clip)
+            
+            # Process in batches to save memory
+            if len(segment_clips) >= batch_size:
+                batch_output = os.path.join(PROJECT_TEMP_DIR, f"batch_{i//batch_size}.mp4")
+                print(f"  - Processing batch {i//batch_size + 1}...")
+                combine_video_segments(segment_clips, batch_output, mode=mode)
+                segment_clips = [VideoFileClip(batch_output)]
+                gc.collect()  # Force garbage collection to free memory
             
             if (i + 1) % 5 == 0 or i == len(dialogue_segments) - 1:
                 print(f"  - Video progress: {i+1}/{len(dialogue_segments)} segments ({((i+1)/len(dialogue_segments))*100:.1f}%)")
                 print(f"  - Elapsed time: {time.time() - start_time:.2f} seconds")
         
-        print(f"  √ Generated {len(segment_clips)} video clips in {time.time() - clips_start:.2f} seconds")
+        print(f"  √ Generated {len(dialogue_segments)} video segments in {time.time() - clips_start:.2f} seconds")
         
         # Combine all segment clips into final video
         print("\nStep 3: Concatenating video clips...")
         concat_start = time.time()
-        print("  - This step may take several minutes depending on video length and complexity")
+        
+        quality_descriptions = {
+            'fast': "low quality (fastest preview)",
+            'balanced': "good quality (larger file size)",
+            'normal': "high quality (standard)"
+        }
+        print(f"  - This step may take several minutes depending on video length and complexity")
+        print(f"  - Generating {quality_descriptions.get(mode, 'standard quality')} video")
+        
         if segment_clips:
-            combine_video_segments(segment_clips, output_path)
+            combine_video_segments(segment_clips, output_path, mode=mode)
             print(f"  √ Concatenated clips in {time.time() - concat_start:.2f} seconds")
         else:
             print("No clips were created. Cannot generate final video.")
@@ -85,6 +109,3 @@ def create_debate_video(output_path='outputs/debate_video.mp4'):
     seconds = total_time % 60
     print(f"\n=== Video Generation Complete ===")
     print(f"Total processing time: {minutes} minutes {seconds:.2f} seconds")
-
-if __name__ == "__main__":
-    create_debate_video()
