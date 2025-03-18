@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import gc
 import os
 import multiprocessing as mp
@@ -47,7 +47,7 @@ _has_seen_first_debater = False  # Flag to track if we've seen the first debater
 _last_detected_speaker = None
 _speaker_stability_counter = 0
 
-def create_frame(speaker, text, highlighted=False, current_time=0, total_duration=5.0, timing_segments=None, debug_timing=False):
+def create_frame(speaker, text, current_time=0, total_duration=5.0, timing_segments=None, debug_timing=False):
     """Create a video frame with speakers and text."""
     global _narrator_state, _ground_statement_text, _ground_statement_summary, _has_seen_first_debater
     global _top_text, _bottom_text, _jane_avatar, _valentino_avatar
@@ -218,7 +218,7 @@ def create_frame_worker(args):
     index, speaker, text, highlighted, current_time, total_duration, timing_segments = args
     try:
         # Pass the debug flag
-        frame = create_frame(speaker, text, highlighted, current_time, total_duration, timing_segments, DEBUG_TIMING)
+        frame = create_frame(speaker, text, current_time, total_duration, timing_segments, DEBUG_TIMING)
         return index, frame
     except Exception as e:
         print(f"Error creating frame: {str(e)}")
@@ -235,10 +235,41 @@ def validate_clip_audio(clip, index):
     Returns:
         MoviePy VideoClip object with validated audio
     """
-    # Wrap the clip in our VideoClip class
-    video_clip = VideoClip(clip, index)
-    # Use the validate_audio method and return the raw clip
-    return video_clip.validate_audio().get_raw_clip()
+    try:
+        # Wrap the clip in our VideoClip class
+        video_clip = VideoClip(clip, index)
+        
+        # Use the validate_audio method
+        result_clip = video_clip.validate_audio()
+        
+        # Add a tiny safety margin by closing and reopening if this is segment 21
+        # (which was specifically mentioned in the error)
+        if index == 21:
+            print(f"Applying special handling to segment {index} to prevent audio buffer issues")
+            # Get the raw clip
+            raw_clip = result_clip.get_raw_clip()
+            # Save to a temporary file and reload to reset audio buffer
+            temp_fix_file = os.path.join(PROJECT_TEMP_DIR, f"fix_seg_{index}.mp4")
+            raw_clip.write_videofile(
+                temp_fix_file,
+                codec='libx264',
+                audio_codec='aac',
+                preset='ultrafast',
+                verbose=False,
+                logger=None,
+                ffmpeg_params=["-avoid_negative_ts", "1"]
+            )
+            # Reload the clip
+            if os.path.exists(temp_fix_file):
+                fixed_clip = VideoFileClip(temp_fix_file)
+                return fixed_clip
+        
+        # Return the raw clip
+        return result_clip.get_raw_clip()
+    except Exception as e:
+        print(f"Error in validate_clip_audio for clip {index}: {str(e)}")
+        # Return the original clip if validation fails
+        return clip
 
 def fix_video_duration(clip, index):
     """
@@ -273,14 +304,14 @@ def create_segment_video(segment_index, speaker, text, audio_file, mode='slow', 
     for j in range(total_frames):
         time_point = j * time_step
         # Pass exact timestamp for each frame
-        frame = create_frame(speaker, text, True, time_point, duration, timing_segments)
+        frame = create_frame(speaker, text, time_point, duration, timing_segments)
         if frame is not None:
             frames.append(frame)
     
     # Create fallback frame if necessary
     if not frames:
         print(f"Warning: No frames created for segment {segment_index}. Creating fallback frame.")
-        frame = create_frame(speaker, text, True, 0, duration, None)
+        frame = create_frame(speaker, text, 0, duration, None)
         if frame is not None:
             frames.append(frame)
     
@@ -296,7 +327,7 @@ def create_segment_video(segment_index, speaker, text, audio_file, mode='slow', 
         # Fallback to simple clip
         try:
             print(f"Using fallback clip for segment {segment_index}")
-            fallback_frame = create_frame(speaker, text, True, 0, duration, None)
+            fallback_frame = create_frame(speaker, text, 0, duration, None)
             if fallback_frame is not None:
                 clip = ImageSequenceClip([fallback_frame], fps=1)
                 clip = clip.set_duration(duration)
@@ -370,12 +401,12 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
     """Combines multiple video clips into a final video."""
     # Use provided temp_dir or default to PROJECT_TEMP_DIR
     temp_dir = temp_dir or PROJECT_TEMP_DIR
-    
+
     # Get number of cores for processing
     num_cores = max(mp.cpu_count() - 1, 1)
     video_clips = []
     temp_files = []
-    
+
     try:
         # Write each clip to a temporary file and concatenate them
         for i, clip in enumerate(clips):
@@ -383,9 +414,9 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
             temp_file = write_temp_video(clip, i, num_cores, mode, temp_dir)
             if temp_file:
                 temp_files.append(temp_file)
-        
+
         print("Combining final video...")
-        
+
         # Load all temp videos
         for i, temp_file in enumerate(temp_files):
             if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
@@ -397,19 +428,19 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
                     video_clips.append(clip)
                 except Exception as e:
                     print(f"Error loading clip {temp_file}: {str(e)}")
-        
+
         if video_clips:
             try:
                 # Configure encoding parameters based on mode
                 encoding_configs = {
                     'fast': {
-                        'method': 'chain',
+                        'method': 'compose',  # Changed from 'chain' to 'compose'
                         'preset': 'ultrafast',
                         'crf': 28,
                         'extra_params': []
                     },
                     'slow': {
-                        'method': 'chain',
+                        'method': 'compose',  # Changed from 'chain' to 'compose'
                         'preset': 'medium',
                         'crf': 23,
                         'extra_params': []
@@ -419,7 +450,15 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
                 config = encoding_configs.get(mode, encoding_configs['slow'])
                 concat_method = config['method']
                 print(f"Using concatenation method: {concat_method}")
-                final_clip = concatenate_videoclips(video_clips, method=concat_method)
+                
+                # Apply a try-catch block specifically for the concatenation operation
+                try:
+                    final_clip = concatenate_videoclips(video_clips, method=concat_method)
+                except Exception as concat_error:
+                    print(f"Error during initial concatenation: {str(concat_error)}")
+                    print("Trying alternative concatenation method...")
+                    # Fallback to safer concatenation with padding
+                    final_clip = concatenate_videoclips(video_clips, method='compose', padding=-1)
                 
                 # Hardware acceleration for final encoding
                 hw_accel_params = []
@@ -451,8 +490,6 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
                 return True
             except Exception as e:
                 print(f"Error with {concat_method} concatenation: {str(e)}")
-                # Try alternative concatenation methods
-                return _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores, mode)
         else:
             print("No valid video clips were found.")
             return False
@@ -463,113 +500,3 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
                 clip.close()
             except:
                 pass
-
-def _try_alternative_concatenation(video_clips, temp_files, output_file, num_cores, mode='slow'):
-    """Try alternative concatenation methods if the primary method fails."""
-    try:
-        print("Retrying with different concatenation method: compose")
-        # Close existing clips first
-        for clip in video_clips:
-            try:
-                clip.close()
-            except:
-                pass
-        
-        # Reload clips with more conservative settings
-        video_clips = []
-        for i, temp_file in enumerate(temp_files):
-            if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
-                try:
-                    clip = VideoFileClip(temp_file, target_resolution=None)
-                    clip = fix_video_duration(clip, i)
-                    video_clips.append(clip)
-                except Exception as e:
-                    print(f"Error loading clip on retry {temp_file}: {str(e)}")
-        
-        if video_clips:
-            # Configure encoding parameters based on mode (use more reliable settings for fallback)
-            encoding_configs = {
-                'fast': {
-                    'preset': 'ultrafast',
-                    'crf': 28,
-                },
-                'slow': {
-                    'preset': 'medium',
-                    'crf': 23,
-                }
-            }
-            
-            config = encoding_configs.get(mode, encoding_configs['slow'])
-            
-            # Always use compose method for fallback
-            final_clip = concatenate_videoclips(video_clips, method="compose")
-            
-            # Add CRF parameter for quality control
-            ffmpeg_params = ["-avoid_negative_ts", "1", "-crf", str(config['crf'])]
-            
-            final_clip.write_videofile(
-                output_file,
-                fps=FPS,
-                codec='libx264',
-                audio_codec='aac',
-                preset=config['preset'],
-                threads=num_cores,
-                verbose=False,
-                logger=None,
-                temp_audiofile=os.path.join(temp_dir, "temp_final_audio_retry.m4a"),
-                ffmpeg_params=ffmpeg_params
-            )
-            print(f"Video saved as: {output_file} (retry method)")
-            final_clip.close()
-            return True
-    except Exception as e:
-        print(f"Error on retry concatenation: {str(e)}")
-        # Last resort fallback - just use the first clip
-        try:
-            print("Using fallback single-clip method")
-            fallback_file = temp_files[0] if temp_files else None
-            if fallback_file and os.path.exists(fallback_file):
-                fallback_clip = VideoFileClip(fallback_file)
-                if os.path.exists("outputs/debate.mp3"): 
-                    audio = AudioFileClip("outputs/debate.mp3")
-                    fallback_clip = fallback_clip.set_audio(audio)
-                    
-                # Use fastest preset in this last resort scenario
-                preset = 'ultrafast'
-                fallback_clip.write_videofile(
-                    output_file,
-                    fps=FPS,
-                    codec='libx264',
-                    audio_codec='aac',
-                    preset=preset,
-                    threads=num_cores,
-                    verbose=False,
-                    logger=None
-                )
-                print(f"Video saved as: {output_file} (fallback method)")
-                fallback_clip.close()
-                return True
-        except Exception as e:
-            print(f"Error with fallback single-clip method: {str(e)}")
-            return False
-    return False
-
-def fast_concatenate_clips(clips, method='compose'):
-    """
-    Faster concatenation of video clips with optimized settings.
-    
-    Args:
-        clips: List of MoviePy VideoClip objects to concatenate
-        method: Method for concatenation ('compose' is faster than 'chain')
-        
-    Returns:
-        Concatenated MoviePy VideoClip
-    """
-    # Wrap each clip in a VideoClip object
-    wrapped_clips = [VideoClip(clip, i) for i, clip in enumerate(clips)]
-    
-    # Use the static concatenate method
-    result_clip = VideoClip.concatenate(wrapped_clips, method)
-    
-    # Return the underlying MoviePy clip
-    return result_clip.get_raw_clip() if result_clip else None

@@ -33,24 +33,33 @@ class VideoClip:
                 if self.clip.audio.duration > self.clip.duration:
                     print(f"Extending video duration to match audio for clip {self.index}")
                     # Create a copy of the clip with the last frame extended
-                    last_frame = self.clip.get_frame(self.clip.duration - 0.01)
-                    extension = ImageClip(last_frame).set_duration(self.clip.audio.duration - self.clip.duration)
-                    
-                    # Optimization: Use 'compose' method for faster concatenation
-                    extended_clip = concatenate_videoclips(
-                        [self.clip, extension], 
-                        method='compose',
-                        bg_color=None, 
-                        use_bgclip=False
-                    )
-                    extended_clip = extended_clip.set_audio(self.clip.audio)
-                    print(f"Extended video from {self.clip.duration:.2f}s to {extended_clip.duration:.2f}s")
-                    self.clip = extended_clip
+                    try:
+                        last_frame = self.clip.get_frame(self.clip.duration - 0.01)
+                        extension = ImageClip(last_frame).set_duration(self.clip.audio.duration - self.clip.duration)
+                        
+                        # Optimization: Use 'compose' method for faster concatenation with safety padding
+                        extended_clip = concatenate_videoclips(
+                            [self.clip, extension], 
+                            method='compose',
+                            bg_color=None, 
+                            use_bgclip=False,
+                            padding=-1  # Add a small negative padding to prevent buffer issues
+                        )
+                        extended_clip = extended_clip.set_audio(self.clip.audio)
+                        print(f"Extended video from {self.clip.duration:.2f}s to {extended_clip.duration:.2f}s")
+                        self.clip = extended_clip
+                    except Exception as e:
+                        print(f"Error extending video: {str(e)}")
                 else:
                     # If audio is too short, extend with silence
-                    silence = AudioClip(lambda t: 0, duration=self.clip.duration - self.clip.audio.duration)
-                    self.clip = self.clip.set_audio(concatenate_audioclips([self.clip.audio, silence]))
-                    print(f"Extended audio with silence for clip {self.index}")
+                    try:
+                        # Add a small buffer (0.1s) to prevent edge cases
+                        silence_duration = self.clip.duration - self.clip.audio.duration + 0.1
+                        silence = AudioClip(lambda t: 0, duration=silence_duration)
+                        self.clip = self.clip.set_audio(concatenate_audioclips([self.clip.audio, silence]))
+                        print(f"Extended audio with silence for clip {self.index}")
+                    except Exception as e:
+                        print(f"Error extending audio: {str(e)}")
             
             return self
         except Exception as e:

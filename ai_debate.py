@@ -127,6 +127,65 @@ class AIDebater:
         summary = summary.replace('"', '').replace("'", "")
         return summary
     
+    def generate_video_title(self, ground_statement: str) -> str:
+        """Generate a catchy title for the video based on the ground statement."""
+        prompt = f"""Create a catchy, engaging title for a debate video about this topic: "{ground_statement}"
+        
+        The title MUST start with "2 AIs Debate About" and should be concise, intriguing, and accurately reflect 
+        the debate topic. Keep the total length under 80 characters including the required prefix.
+        
+        Return ONLY the title text with no quotes or additional commentary."""
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that creates engaging video titles."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=60
+        )
+        
+        title = response.choices[0].message.content.strip()
+        # Ensure it starts with the required prefix
+        if not title.startswith("2 AIs Debate About"):
+            title = "2 AIs Debate About " + title
+        # Remove any quotes that might be included in the response
+        title = title.replace('"', '').replace("'", "")
+        return title
+    
+    def generate_video_description(self, ground_statement: str) -> str:
+        """Generate a compelling description for the video based on the ground statement."""
+        prompt = f"""Create an engaging YouTube description for a debate video where two AI debaters 
+        (Jane and Valentino) discuss this topic: "{ground_statement}"
+        
+        The description should:
+        1. Be 3-4 sentences long
+        2. Briefly explain the key points of contention
+        3. Create intrigue about who might win the debate
+        4. Encourage viewers to watch the full debate
+        
+        Return ONLY the description text with no quotes or additional commentary."""
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that creates engaging video descriptions."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=150
+        )
+        
+        description = response.choices[0].message.content.strip()
+        # Remove any quotes that might be included in the response
+        description = description.replace('"', '').replace("'", "")
+        return description
+    
     def debate(self, ground_statement: str, generate_audio: bool = True, use_existing_scripts: bool = False,
                use_existing_audios: bool = False, jane_first: bool = True) -> List[str]:
         """Conduct an AI debate between Jane and Valentino.
@@ -265,6 +324,18 @@ class AIDebater:
         return full_history
 
     def generate_debate(self):
+        # Generate video title and description
+        video_title = self.generate_video_title(self.ground_statement)
+        video_description = self.generate_video_description(self.ground_statement)
+        
+        print(f"Video Title: {video_title}")
+        print(f"Video Description: {video_description}\n")
+        
+        # Write title and description to video.txt file
+        with open('outputs/video.txt', 'w', encoding='utf-8') as vf:
+            vf.write(f"Title: {video_title}\n\n")
+            vf.write(f"Description: {video_description}\n")
+        
         # More concise narrator introduction while still explaining everything
         debate_text = "Narrator: Welcome to our AI debate. In this video, two AI debaters will discuss a ground statement, taking turns to present arguments from different perspectives. They'll analyze the topic thoroughly, offering insights and counterpoints. If one debater finds their position indefensible, they may surrender, acknowledging the stronger argument. Let's begin with our ground statement.\n\n"
         
@@ -283,7 +354,7 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "AI-generated art is soulless and steals from artists' work and livelihood; therefore, it should not exist."
+    ground_statement = "There are only two genders, and individuals cannot simply choose their gender."
     
     # Update the main method to include the new parameter option
-    debate_results = debater.debate(ground_statement, use_existing_scripts=True, use_existing_audios=False, jane_first=False)
+    debate_results = debater.debate(ground_statement, use_existing_scripts=False, use_existing_audios=False, jane_first=True)

@@ -10,7 +10,7 @@ from utils.audio_utils import get_segment_audio_file
 from utils.video_utils import create_segment_video, combine_video_segments
 from config import TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
 
-def create_debate_video(output_path='outputs/debate.mp4', mode='fast', batch_size=10):
+def create_debate_video(output_path='outputs/debate.mp4', mode='fast', batch_size=30):
     """Create a video visualization of the debate with audio.
     
     Args:

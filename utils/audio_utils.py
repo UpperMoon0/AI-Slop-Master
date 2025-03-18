@@ -1,10 +1,11 @@
-import os
 import json
-import asyncio
+import os
+from typing import List, Dict
+
 import edge_tts
-from typing import List, Dict, Optional, Tuple
 from pydub import AudioSegment
-from utils.text_utils import split_text_into_smaller_parts
+
+from utils.text_utils import split_text_into_chunks
 
 # Define voices
 VOICES = {
@@ -232,11 +233,10 @@ async def text_to_speech(text: str, voice: str, output_file: str) -> bool:
         # Create timing segments based on improved chunking
         try:
             # Smaller chunk size for better readability (30-40 chars per line)
-            max_chunk_size = 40
-            
-            # Ensure we don't miss any text at the beginning
+            max_chunk_size = 80
+
             # Split the entire text into smaller, more readable chunks
-            text_chunks = split_text_into_smaller_parts(text, max_chars=max_chunk_size)
+            text_chunks = split_text_into_chunks(text, max_chars=max_chunk_size)
             
             if len(text_chunks) == 1:
                 # For very short text, use a single segment

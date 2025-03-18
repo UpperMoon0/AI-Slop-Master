@@ -1,5 +1,3 @@
-from PIL import ImageFont
-
 def get_font_metrics(font, text):
     """Get font metrics in a way that works with both old and new Pillow versions."""
     try:
@@ -41,7 +39,7 @@ def wrap_text(text, font, max_width):
     
     return lines
 
-def split_text_into_smaller_parts(text: str, max_chars: int = 40) -> list:
+def split_text_into_chunks(text: str, max_chars: int = 60) -> list:
     """
     Split text into smaller parts (sentences or parts of sentences) for better subtitle timing.
     
@@ -132,26 +130,3 @@ def split_text_into_smaller_parts(text: str, max_chars: int = 40) -> list:
                 i += 1
     
     return final_segments
-
-def split_text_into_chunks(text, chunk_size=15):  # Increased from 8 to 15
-    """Split text into chunks of roughly equal size."""
-    if not text:  # Handle empty text
-        return [""]
-        
-    words = text.split()
-    if not words:  # Handle text with no words
-        return [""]
-        
-    chunks = []
-    current_chunk = []
-    
-    for word in words:
-        current_chunk.append(word)
-        if len(current_chunk) >= chunk_size:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = []
-    
-    if current_chunk:  # Add any remaining words
-        chunks.append(" ".join(current_chunk))
-    
-    return chunks if chunks else [text]  # Return original text if no chunks were created
