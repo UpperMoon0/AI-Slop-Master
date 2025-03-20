@@ -131,7 +131,7 @@ class AIDebater:
         """Generate a catchy title for the video based on the ground statement."""
         prompt = f"""Create a catchy, engaging title for a debate video about this topic: "{ground_statement}"
         
-        The title MUST start with "2 AIs Debate About" and should be concise, intriguing, and accurately reflect 
+        The title MUST start with "Two AIs Debate About" and should be concise, intriguing, and accurately reflect 
         the debate topic. Keep the total length under 80 characters including the required prefix.
         
         Return ONLY the title text with no quotes or additional commentary."""
@@ -150,8 +150,8 @@ class AIDebater:
         
         title = response.choices[0].message.content.strip()
         # Ensure it starts with the required prefix
-        if not title.startswith("2 AIs Debate About"):
-            title = "2 AIs Debate About " + title
+        if not title.startswith("Two AIs Debate About"):
+            title = "Two AIs Debate About " + title
         # Remove any quotes that might be included in the response
         title = title.replace('"', '').replace("'", "")
         return title
@@ -160,6 +160,10 @@ class AIDebater:
         """Generate a compelling description for the video based on the ground statement."""
         prompt = f"""Create an engaging YouTube description for a debate video where two AI debaters 
         (Jane and Valentino) discuss this topic: "{ground_statement}"
+        
+        Positions in the debate:
+        - Valentino (AI Debater 2) is AGAINST the ground statement
+        - Jane (AI Debater 1) SUPPORTS the ground statement
         
         The description should:
         1. Be 3-4 sentences long
@@ -354,7 +358,7 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "The Earth is flat and motionless, with horizons that never curve and water that stays perfectly level."
+    ground_statement = "Why fund space exploration when urgent problems like poverty and climate change need solving on Earth?"
     
     # Update the main method to include the new parameter option
-    debate_results = debater.debate(ground_statement, use_existing_scripts=False, use_existing_audios=False, jane_first=False)
+    debate_results = debater.debate(ground_statement, use_existing_scripts=True, use_existing_audios=False, jane_first=False)
