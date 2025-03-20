@@ -156,14 +156,18 @@ class AIDebater:
         title = title.replace('"', '').replace("'", "")
         return title
     
-    def generate_video_description(self, ground_statement: str) -> str:
+    def generate_video_description(self, ground_statement: str, jane_first = True) -> str:
         """Generate a compelling description for the video based on the ground statement."""
+
+        jane_stance = "supports" if jane_first else "opposes"
+        valentino_stance = "opposes" if jane_first else "supports"
+
         prompt = f"""Create an engaging YouTube description for a debate video where two AI debaters 
         (Jane and Valentino) discuss this topic: "{ground_statement}"
         
         Positions in the debate:
-        - Valentino (AI Debater 2) is AGAINST the ground statement
-        - Jane (AI Debater 1) SUPPORTS the ground statement
+        - Jane {jane_stance} the ground statement
+        - Valentino {valentino_stance} the ground statement
         
         The description should:
         1. Be 3-4 sentences long
@@ -232,7 +236,7 @@ class AIDebater:
         self.debate_history.clear()
         
         # Generate debate.txt file with initial content
-        self.generate_debate()
+        self.generate_debate(jane_first=jane_first)
         
         round_num = 0
         surrender_occurred = False
@@ -327,10 +331,10 @@ class AIDebater:
         full_history = [ground_statement] + list(self.debate_history)
         return full_history
 
-    def generate_debate(self):
+    def generate_debate(self, jane_first: bool = True):
         # Generate video title and description
         video_title = self.generate_video_title(self.ground_statement)
-        video_description = self.generate_video_description(self.ground_statement)
+        video_description = self.generate_video_description(self.ground_statement, jane_first)
         
         print(f"Video Title: {video_title}")
         print(f"Video Description: {video_description}\n")
