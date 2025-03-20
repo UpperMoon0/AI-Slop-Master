@@ -254,7 +254,9 @@ class AIDebater:
             first_prompt = f"""Counter this argument in a single coherent paragraph: {previous}. 
             You must CONSISTENTLY OPPOSE the ground statement: "{ground_statement}"
             Regardless of whether you personally agree with it or if it contains factual errors, your role is to argue AGAINST it.
-            Be concise and express your complete argument in one paragraph only."""
+            Be concise and express your complete argument in one paragraph only.
+            
+            IMPORTANT: Use varied language to start your responses. Avoid repetitive phrases like "I disagree" or "That's not correct" at the beginning of every response. Each counterargument should begin with different phrasing to make the debate sound more natural."""
             
             # Add hint about surrendering as rounds progress
             if round_num >= 5 and round_num < 10:
@@ -284,7 +286,9 @@ class AIDebater:
             second_prompt = f"""Counter this argument in a single coherent paragraph: {first_response}.
             You must CONSISTENTLY SUPPORT the ground statement: "{ground_statement}"
             Regardless of whether you personally disagree with it or if it contains factual errors, your role is to argue FOR it.
-            Be concise and express your complete argument in one paragraph only."""
+            Be concise and express your complete argument in one paragraph only.
+            
+            IMPORTANT: Use varied language to start your responses. Avoid repetitive phrases like "Actually" or "While that may be true" at the beginning of every response. Each counterargument should begin with different phrasing to make the debate sound more natural."""
             
             # Add hint about surrendering as rounds progress - stronger encouragement for the second debater
             if round_num >= 4 and round_num < 7:
@@ -368,7 +372,7 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "Why fund space exploration when urgent problems like poverty and climate change need solving on Earth?"
+    ground_statement = "The Earth is not flat, as proven by centuries of scientific observations, satellite images, and the simple fact that we can travel around it in a continuous loop."
     
     # Update the main method to include the new parameter option
-    debate_results = debater.debate(ground_statement, use_existing_scripts=True, use_existing_audios=False, jane_first=False)
+    debate_results = debater.debate(ground_statement, use_existing_scripts=False, use_existing_audios=False, jane_first=True)
