@@ -251,7 +251,10 @@ class AIDebater:
             
             # First debater's turn
             first_debater = "Jane" if jane_first else "Valentino"
-            first_prompt = f"Counter this argument in a single coherent paragraph: {previous}. Be concise and express your complete argument in one paragraph only."
+            first_prompt = f"""Counter this argument in a single coherent paragraph: {previous}. 
+            You must CONSISTENTLY OPPOSE the ground statement: "{ground_statement}"
+            Regardless of whether you personally agree with it or if it contains factual errors, your role is to argue AGAINST it.
+            Be concise and express your complete argument in one paragraph only."""
             
             # Add hint about surrendering as rounds progress
             if round_num >= 5 and round_num < 10:
@@ -278,7 +281,10 @@ class AIDebater:
                 
             # Second debater's turn
             second_debater = "Valentino" if jane_first else "Jane"
-            second_prompt = f"Counter this argument in a single coherent paragraph: {first_response}. Be concise and express your complete argument in one paragraph only."
+            second_prompt = f"""Counter this argument in a single coherent paragraph: {first_response}.
+            You must CONSISTENTLY SUPPORT the ground statement: "{ground_statement}"
+            Regardless of whether you personally disagree with it or if it contains factual errors, your role is to argue FOR it.
+            Be concise and express your complete argument in one paragraph only."""
             
             # Add hint about surrendering as rounds progress - stronger encouragement for the second debater
             if round_num >= 4 and round_num < 7:
