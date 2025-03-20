@@ -354,7 +354,7 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "There are only two genders, and individuals cannot simply choose their gender."
+    ground_statement = "The Earth is flat and motionless, with horizons that never curve and water that stays perfectly level."
     
     # Update the main method to include the new parameter option
-    debate_results = debater.debate(ground_statement, use_existing_scripts=False, use_existing_audios=False, jane_first=True)
+    debate_results = debater.debate(ground_statement, use_existing_scripts=False, use_existing_audios=False, jane_first=False)
