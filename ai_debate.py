@@ -159,8 +159,8 @@ class AIDebater:
     def generate_video_description(self, ground_statement: str, jane_first = True) -> str:
         """Generate a compelling description for the video based on the ground statement."""
 
-        jane_stance = "supports" if jane_first else "opposes"
-        valentino_stance = "opposes" if jane_first else "supports"
+        jane_stance = "opposes" if jane_first else "supports"
+        valentino_stance = "supports" if jane_first else "opposes"
 
         prompt = f"""Create an engaging YouTube description for a debate video where two AI debaters 
         (Jane and Valentino) discuss this topic: "{ground_statement}"
