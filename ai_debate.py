@@ -355,7 +355,7 @@ class AIDebater:
             vf.write(f"Description: {video_description}\n")
         
         # More concise narrator introduction while still explaining everything
-        debate_text = "Narrator: Welcome to our AI debate. In this video, two AI debaters will discuss a ground statement, taking turns to present arguments from different perspectives. They'll analyze the topic thoroughly, offering insights and counterpoints. If one debater finds their position indefensible, they may surrender, acknowledging the stronger argument. Let's begin with our ground statement.\n\n"
+        debate_text = "Narrator: Welcome to our AI debate. In this video, two AI debaters will discuss a ground statement, taking turns to present arguments from different perspectives, offering insights and counterpoints. If one debater finds their position indefensible, they may surrender. Let's begin with our ground statement.\n\n"
         
         # Add ground statement
         debate_text += f"Ground Statement: {self.ground_statement}\n\n"
