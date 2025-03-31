@@ -28,6 +28,25 @@ class Avatar:
         self.highlighted = highlighted
         return self
     
+    def draw_name(self, draw):
+        """Draw the avatar name below the avatar image.
+        
+        Args:
+            draw: PIL ImageDraw object
+        """
+        if not self.name:
+            return
+            
+        x, y = self.position
+        
+        # Calculate text position (centered under the avatar)
+        text_width, text_height = get_font_metrics(NAME_FONT, self.name)
+        text_x = x + (self.size - text_width) // 2
+        text_y = y + self.size + 10  # 10 pixels below the avatar
+        
+        # Draw the name
+        draw.text((text_x, text_y), self.name, fill=TEXT_COLOR, font=NAME_FONT)
+    
     def draw_on_frame(self, frame):
         """
         Draw the avatar on the OpenCV frame.
@@ -65,18 +84,3 @@ class Avatar:
                 highlight_color_bgr,  # Use BGR order for OpenCV
                 highlight_thickness
             )
-    
-    def draw_name(self, draw_object):
-        """
-        Draw the name below the avatar using PIL ImageDraw.
-        
-        Args:
-            draw_object: PIL ImageDraw object
-        """
-        x, y = self.position
-        name_y = y + self.size + 10
-        
-        name_width, _ = get_font_metrics(NAME_FONT, self.name)
-        name_x = x + (self.size - name_width) // 2
-        
-        draw_object.text((name_x, name_y), self.name, fill=TEXT_COLOR, font=NAME_FONT)

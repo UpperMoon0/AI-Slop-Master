@@ -1,5 +1,5 @@
+from moviepy import concatenate_videoclips
 from moviepy.video.VideoClip import ImageClip
-from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.audio.AudioClip import AudioClip, concatenate_audioclips
 
 class VideoClip:

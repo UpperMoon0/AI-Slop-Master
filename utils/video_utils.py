@@ -1,20 +1,20 @@
+import multiprocessing as mp
+import os
+
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-import gc
-import os
-import multiprocessing as mp
-from moviepy.editor import AudioFileClip, ImageSequenceClip, VideoFileClip, concatenate_videoclips
+from moviepy import AudioFileClip, ImageSequenceClip, VideoFileClip, concatenate_videoclips
 
-from config import VIDEO_WIDTH, VIDEO_HEIGHT, TEXT_COLOR, HIGHLIGHT_COLOR
-from config import JANE_AVATAR, VALENTINO_AVATAR, TEXT_FONT, NAME_FONT
+from audio.audio_clip import AudioClip
 from config import FPS, TEMP_FRAMES_DIR, PROJECT_TEMP_DIR
-from utils.text_utils import wrap_text, get_font_metrics
+from config import JANE_AVATAR, VALENTINO_AVATAR, TEXT_FONT
+from config import VIDEO_WIDTH, VIDEO_HEIGHT
 from utils.audio_utils import get_current_subtitle, get_segment_duration, get_segment_timing
-from video.text import Text
-from video.avatar import Avatar
 from utils.file_utils import get_ground_statement_summary
+from video.avatar import Avatar
 from video.clip import VideoClip
+from video.text import Text
 
 # Add at the top of the file with other globals
 DEBUG_TIMING = False  # Global flag for timing debug mode
@@ -397,7 +397,7 @@ def write_temp_video(clip, index, num_cores, mode='slow', temp_dir=None):
         except:
             pass
 
-def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
+def combine_video_segments(clips, output_file, mode='slow', temp_dir=None, add_bg_music=True, bg_music_file="assets/background_music.mp3", bg_volume=0.15):
     """Combines multiple video clips into a final video."""
     # Use provided temp_dir or default to PROJECT_TEMP_DIR
     temp_dir = temp_dir or PROJECT_TEMP_DIR
@@ -434,13 +434,13 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
                 # Configure encoding parameters based on mode
                 encoding_configs = {
                     'fast': {
-                        'method': 'compose',  # Changed from 'chain' to 'compose'
+                        'method': 'chain',  
                         'preset': 'ultrafast',
                         'crf': 28,
                         'extra_params': []
                     },
                     'slow': {
-                        'method': 'compose',  # Changed from 'chain' to 'compose'
+                        'method': 'chain',
                         'preset': 'medium',
                         'crf': 23,
                         'extra_params': []
@@ -459,6 +459,39 @@ def combine_video_segments(clips, output_file, mode='slow', temp_dir=None):
                     print("Trying alternative concatenation method...")
                     # Fallback to safer concatenation with padding
                     final_clip = concatenate_videoclips(video_clips, method='compose', padding=-1)
+                
+                # Add background music if requested
+                if add_bg_music and os.path.exists(bg_music_file):
+                    try:
+                        print(f"Adding background music from {bg_music_file}")
+                        
+                        # Create a temporary audio file for the video
+                        temp_audio_file = os.path.join(temp_dir, "temp_video_audio.mp3")
+                        
+                        # Extract the audio from the final clip
+                        final_clip.audio.write_audiofile(
+                            temp_audio_file,
+                            codec='mp3',
+                            bitrate="192k",
+                            verbose=False,
+                            logger=None
+                        )
+                        
+                        # Mix with background music
+                        mixed_audio_file = AudioClip.mix_with_background_music(
+                            temp_audio_file, 
+                            bg_music_file, 
+                            bg_volume
+                        )
+                        
+                        # Load mixed audio and set it to the final clip
+                        mixed_audio = AudioFileClip(mixed_audio_file)
+                        final_clip = final_clip.set_audio(mixed_audio)
+                        
+                        print("Successfully added background music")
+                    except Exception as e:
+                        print(f"Error adding background music: {str(e)}")
+                        print("Continuing with original audio")
                 
                 # Hardware acceleration for final encoding
                 hw_accel_params = []

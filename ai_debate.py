@@ -1,9 +1,11 @@
-import os
-from typing import List, Optional
-from collections import deque
-from openai import OpenAI
-from dotenv import load_dotenv
 import asyncio
+import os
+from collections import deque
+from typing import List
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
 from debate_to_speech import process_debate
 from debate_to_video import create_debate_video
 from utils.file_utils import reformat_debate_file
@@ -372,7 +374,7 @@ class AIDebater:
 
 if __name__ == "__main__":
     debater = AIDebater()
-    ground_statement = "The Earth is not flat, as proven by centuries of scientific observations, satellite images, and the simple fact that we can travel around it in a continuous loop."
+    ground_statement = "Coding is becoming obsolete as increasingly powerful AI tools continue to emerge."
     
     # Update the main method to include the new parameter option
-    debate_results = debater.debate(ground_statement, use_existing_scripts=False, use_existing_audios=False, jane_first=True)
+    debate_results = debater.debate(ground_statement, use_existing_scripts=True, use_existing_audios=False, jane_first=True)

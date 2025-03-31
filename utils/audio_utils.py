@@ -1,49 +1,33 @@
 import json
 import os
 from typing import List, Dict
-
-import edge_tts
+import asyncio
 from pydub import AudioSegment
 
 from utils.text_utils import split_text_into_chunks
+from utils.websocket_manager import WebSocketManager
+from audio.audio_clip import AudioClip
 
-# Define voices
+# Update voice mapping to use Sesame's integer-based speaker IDs
 VOICES = {
-    "Narrator": "en-US-ChristopherNeural",
-    "AI Debater 1": "en-GB-RyanNeural",
-    "AI Debater 2": "en-US-JasonNeural",
-    "Jane": "en-GB-SoniaNeural",
-    "Valentino": "en-US-GuyNeural"
+    "Narrator": 0,       # Default male voice
+    "AI Debater 1": 1,   # Different voice
+    "AI Debater 2": 0,   # Back to the first voice
+    "Jane": 1,           # Female voice
+    "Valentino": 0       # Male voice
 }
 
 def get_segment_audio_file(segment_index):
     """Get the audio file for a specific segment index."""
-    try:
-        audio_file = f'outputs/audio_output/part_{segment_index:02d}.mp3'
-        if os.path.exists(audio_file):
-            return audio_file
-        
-        # Try to find by looking at available files
-        files = [f for f in os.listdir('outputs/audio_output') if f.endswith('.mp3') and not f.endswith('_timing.mp3')]
-        files.sort()
-        if segment_index < len(files):
-            return os.path.join('outputs/audio_output', files[segment_index])
-        
-        return None
-    except Exception as e:
-        print(f"Error getting segment audio file: {str(e)}")
-        return None
+    clip = AudioClip.from_segment_index(segment_index)
+    return clip.file_path if clip else None
 
 def get_segment_duration(audio_file):
     """Get the duration of an audio file in seconds."""
-    try:
-        if audio_file and os.path.exists(audio_file):
-            audio = AudioSegment.from_mp3(audio_file)
-            return len(audio) / 1000.0  # pydub uses milliseconds
-        return 5.0  # Default duration if we can't determine
-    except Exception as e:
-        print(f"Error getting audio duration: {str(e)}")
-        return 5.0
+    if audio_file and os.path.exists(audio_file):
+        clip = AudioClip(audio_file)
+        return clip.duration
+    return 5.0  # Default duration if we can't determine
 
 def get_all_timing_data():
     """Get all timing data across all segments for a comprehensive view."""
@@ -60,13 +44,14 @@ def get_all_timing_data():
         for timing_file in timing_files:
             try:
                 # Extract the audio file name for this timing file
-                audio_file = timing_file.replace('_timing.json', '.mp3')
+                audio_file = timing_file.replace('_timing.json', '.wav')
+                audio_path = os.path.join('outputs/audio_output', audio_file)
                 
-                # Get audio duration
+                # Get audio duration using AudioClip
                 audio_duration = 0.0
-                if os.path.exists(os.path.join('outputs/audio_output', audio_file)):
-                    audio = AudioSegment.from_mp3(os.path.join('outputs/audio_output', audio_file))
-                    audio_duration = len(audio) / 1000.0
+                if os.path.exists(audio_path):
+                    clip = AudioClip(audio_path)
+                    audio_duration = clip.duration
                 
                 # Load timing data
                 with open(os.path.join('outputs/audio_output', timing_file), 'r') as f:
@@ -173,23 +158,11 @@ def get_segment_timing(audio_file):
     if audio_file is None:
         return all_timing
         
-    # If we need specific segment timing, get the file's timing
-    timing_file = audio_file.replace('.mp3', '_timing.json')
-    
+    # If we need specific segment timing, use AudioClip to get the file's timing
     try:
-        if os.path.exists(timing_file):
-            with open(timing_file, 'r') as f:
-                timing_data = json.load(f)
-                segments = timing_data.get("segments", [])
-                
-                # Ensure all segments have proper timing fields
-                for segment in segments:
-                    if "start_time" not in segment:
-                        segment["start_time"] = 0.0
-                    if "end_time" not in segment:
-                        segment["end_time"] = get_segment_duration(audio_file)
-                        
-                return segments
+        if os.path.exists(audio_file):
+            clip = AudioClip(audio_file)
+            return clip.timing_data.get("segments", [])
         else:
             # Return the relevant portion of the global timing data
             return all_timing
@@ -198,100 +171,383 @@ def get_segment_timing(audio_file):
         # Fall back to global timing data
         return all_timing
 
-async def text_to_speech(text: str, voice: str, output_file: str) -> bool:
-    """Convert text to speech using Edge TTS with detailed timing information."""
+def validate_audio_timing(output_file, timing_data):
+    """Validates that the audio and timing data are properly aligned.
+    
+    Args:
+        output_file: Path to the audio file
+        timing_data: The timing data dictionary with segments
+        
+    Returns:
+        bool: True if validation passes, False otherwise
+    """
+    try:
+        # Load the audio file
+        audio = AudioSegment.from_wav(output_file)
+        audio_duration = len(audio) / 1000.0  # Convert ms to seconds
+        
+        # Extract timing info
+        segments = timing_data.get("segments", [])
+        if not segments:
+            print(f"WARNING: No segments found in timing data for {output_file}")
+            return False
+        
+        # Calculate total timing coverage
+        last_segment = segments[-1]
+        timing_duration = last_segment.get("end_time", 0)
+        
+        # Validate end time matches audio duration
+        if abs(timing_duration - audio_duration) > 0.5:  # Allow 0.5s difference
+            print(f"WARNING: Timing duration ({timing_duration:.2f}s) doesn't match audio duration ({audio_duration:.2f}s)")
+            
+            # Fix timing if needed
+            for segment in segments:
+                # Scale all timings to match audio duration
+                segment["start_time"] = (segment["start_time"] / timing_duration) * audio_duration
+                segment["end_time"] = (segment["end_time"] / timing_duration) * audio_duration
+            
+            # Ensure the last segment ends exactly at the audio duration
+            segments[-1]["end_time"] = audio_duration
+            print(f"Adjusted timing to match audio duration: {audio_duration:.2f}s")
+        
+        # Check for gaps or overlaps
+        for i in range(1, len(segments)):
+            prev_end = segments[i-1].get("end_time", 0)
+            curr_start = segments[i].get("start_time", 0)
+            
+            # Check for gaps
+            if curr_start - prev_end > 0.2:  # Gap greater than 200ms
+                print(f"WARNING: Gap between segments {i-1} and {i}: {curr_start - prev_end:.2f}s")
+                # Fix the gap
+                segments[i-1]["end_time"] = curr_start
+            
+            # Check for overlaps
+            if prev_end > curr_start:
+                print(f"WARNING: Overlap between segments {i-1} and {i}: {prev_end - curr_start:.2f}s")
+                # Fix the overlap
+                segments[i-1]["end_time"] = curr_start
+        
+        # Log segment info for debugging
+        total_text_length = sum(len(segment.get("text", "")) for segment in segments)
+        print(f"Audio: {audio_duration:.2f}s, {len(segments)} segments, ~{total_text_length} chars")
+        for i, segment in enumerate(segments):
+            segment_duration = segment.get("end_time", 0) - segment.get("start_time", 0)
+            chars_per_second = len(segment.get("text", "")) / segment_duration if segment_duration > 0 else 0
+            print(f"  Segment {i}: {segment_duration:.2f}s, {len(segment.get('text', ''))} chars ({chars_per_second:.1f} chars/sec)")
+            if chars_per_second > 30:  # Very fast speech
+                print(f"    WARNING: Segment {i} may be too fast to read")
+        
+        return True
+    except Exception as e:
+        print(f"Error validating timing: {e}")
+        return False
+
+async def text_to_speech(text: str, voice: int, output_file: str, max_retries: int = 3) -> bool:
+    """Convert text to speech using WebSocket TTS service."""
     try:
         # Ensure directory exists
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         
-        # Create both the audio file and timing file simultaneously
-        timing_data = {"segments": []}
+        # Set a reasonable max_audio_length_ms value to handle long texts without model issues
+        # 150 seconds should be enough for most debate segments without stressing the model
+        max_audio_length_ms = 150000  # 2.5 minutes
         
-        print(f"Creating audio file: {output_file}")
-        
-        try:
-            # Initialize Edge TTS
-            communicate = edge_tts.Communicate(text, voice)
-            
-            # Process the audio stream with timing information
-            await communicate.save(output_file)
-            
-            # Get duration of the audio file
-            duration = 0
+        # Try multiple times in case of connection issues
+        for retry in range(max_retries):
             try:
-                audio = AudioSegment.from_mp3(output_file)
-                duration = len(audio) / 1000.0  # Convert ms to seconds
-                print(f"Audio duration: {duration:.2f}s")
-            except Exception as e:
-                print(f"Warning: Could not get audio duration: {str(e)}")
-                duration = 5.0  # Default duration if we can't determine it
+                # Create WebSocket manager without timeout
+                ws_manager = WebSocketManager()  # No timeout, wait indefinitely
                 
-        except Exception as e:
-            print(f"Error in TTS generation: {str(e)}")
-            return False
-        
-        # Create timing segments based on improved chunking
-        try:
-            # Smaller chunk size for better readability (30-40 chars per line)
-            max_chunk_size = 80
-
-            # Split the entire text into smaller, more readable chunks
-            text_chunks = split_text_into_chunks(text, max_chars=max_chunk_size)
-            
-            if len(text_chunks) == 1:
-                # For very short text, use a single segment
-                segment = {
-                    "text": text,
-                    "start_time": 0,
-                    "end_time": duration
-                }
-                timing_data["segments"] = [segment]
-            else:
-                # Calculate timing for each chunk
-                chunk_duration = duration / len(text_chunks)
+                print(f"TTS attempt {retry+1}/{max_retries} for {output_file}")
                 
-                # Create timing segments based on text chunks
-                for i, chunk in enumerate(text_chunks):
-                    start_time = i * chunk_duration
-                    end_time = (i + 1) * chunk_duration
+                # Send TTS request with correct parameters including higher max_audio_length_ms
+                result = await ws_manager.send_tts_request(
+                    text=text, 
+                    speaker=voice, 
+                    sample_rate=24000,
+                    response_mode="stream",
+                    max_audio_length_ms=max_audio_length_ms
+                )
+                
+                # Extract metadata
+                metadata = result.get("metadata", {})
+                print(f"TTS response metadata: {json.dumps(metadata)}")
+                
+                # Add detailed logging about the received audio data
+                audio_data = result.get("audio_data", b"")
+                print(f"Received audio data size: {len(audio_data)} bytes")
+                if len(audio_data) < 100000:  # If suspiciously small
+                    print(f"WARNING: Audio data seems unusually small for the text length ({len(text)} chars)")
+                
+                # Try to save the audio data with file permission handling
+                file_saved = False
+                for file_retry in range(3):  # Try 3 times to save the file
+                    try:
+                        # Check if file exists and try to remove it first
+                        if os.path.exists(output_file):
+                            try:
+                                os.remove(output_file)
+                                print(f"Removed existing file: {output_file}")
+                            except (PermissionError, OSError) as e:
+                                print(f"Warning: Could not remove existing file {output_file}: {e}")
+                                # Try with a different filename if we can't remove the existing one
+                                output_file = output_file.replace('.wav', f'_new_{file_retry}.wav')
+                                print(f"Trying alternate filename: {output_file}")
+                        
+                        # Save the audio data
+                        with open(output_file, "wb") as f:
+                            f.write(result["audio_data"])
+                        
+                        file_saved = True
+                        break  # File saved successfully
+                    except (PermissionError, OSError) as e:
+                        print(f"Error saving file on attempt {file_retry+1}: {e}")
+                        if file_retry < 2:  # Last retry
+                            print(f"Waiting 1 second before retrying...")
+                            await asyncio.sleep(1)
+                
+                if not file_saved:
+                    print(f"Failed to save audio file after multiple attempts. Continuing without saving.")
+                    return False
+                
+                # Create timing data based on text chunks
+                try:
+                    audio = AudioSegment.from_wav(output_file)
+                    duration = len(audio) / 1000.0  # Convert ms to seconds
                     
-                    segment = {
-                        "text": chunk,
-                        "start_time": start_time,
-                        "end_time": end_time
-                    }
-                    timing_data["segments"].append(segment)
-        except Exception as e:
-            print(f"Warning: Could not create detailed timing: {str(e)}")
-            # Create at least one basic timing segment
-            timing_data["segments"] = [{
-                "text": text,
-                "start_time": 0,
-                "end_time": duration
-            }]
+                    # First try to use forced alignment if available (most accurate)
+                    try:
+                        import torch
+                        from gentle_force import ForceAligner
+                        
+                        print("Attempting to use forced alignment for precise timing...")
+                        # Convert audio to the format needed by the aligner
+                        temp_audio_path = output_file.replace('.wav', '_temp.wav')
+                        audio.export(temp_audio_path, format="wav", parameters=["-ac", "1", "-ar", "16000"])
+                        
+                        # Initialize the forced aligner
+                        aligner = ForceAligner()
+                        
+                        # Perform alignment
+                        alignment = aligner.align(audio_path=temp_audio_path, text=text)
+                        
+                        # Process alignment results
+                        if alignment and alignment.words:
+                            # Group words into reasonable chunks for subtitles
+                            timing_data = {"segments": []}
+                            current_segment = {"text": "", "start_time": 0, "end_time": 0}
+                            word_count = 0
+                            
+                            for word in alignment.words:
+                                # Start a new segment every ~10-15 words or at punctuation
+                                if (word_count >= 12 and word.word.endswith(('.', ',', '!', '?', ':', ';'))) or word_count >= 15:
+                                    if current_segment["text"]:
+                                        current_segment["end_time"] = word.end
+                                        timing_data["segments"].append(current_segment)
+                                        current_segment = {"text": "", "start_time": word.end, "end_time": 0}
+                                        word_count = 0
+                                
+                                # Add word to current segment
+                                if current_segment["text"]:
+                                    current_segment["text"] += " " + word.word
+                                else:
+                                    current_segment["text"] = word.word
+                                    current_segment["start_time"] = word.start
+                                
+                                word_count += 1
+                            
+                            # Add the last segment if it has content
+                            if current_segment["text"]:
+                                current_segment["end_time"] = duration
+                                timing_data["segments"].append(current_segment)
+                            
+                            print(f"Successfully created {len(timing_data['segments'])} timing segments using forced alignment")
+                            
+                            # Clean up temporary file
+                            try:
+                                os.remove(temp_audio_path)
+                            except:
+                                pass
+                            
+                            # Skip the fallback timing method
+                            raise StopIteration("Used forced alignment")
+                    except ImportError:
+                        print("Forced alignment library not available, using fallback timing estimation")
+                    except Exception as e:
+                        if isinstance(e, StopIteration):
+                            raise
+                        print(f"Error during forced alignment: {e}, using fallback timing estimation")
+                    
+                    # Fallback: Improved timing estimation based on natural language features
+                    print(f"Creating improved timing data for audio with duration {duration:.2f} seconds")
+                    
+                    # We'll use natural language features to estimate timing more accurately
+                    sentences = []
+                    current_sentence = ""
+                    # Split text into sentences based on punctuation
+                    for char in text:
+                        current_sentence += char
+                        if char in ['.', '!', '?', ':', ';'] and current_sentence.strip():
+                            sentences.append(current_sentence.strip())
+                            current_sentence = ""
+                    # Add any remaining text as the last sentence
+                    if current_sentence.strip():
+                        sentences.append(current_sentence.strip())
+                    
+                    # Calculate character count for each sentence
+                    total_chars = sum(len(s) for s in sentences)
+                    
+                    # Create timing data with a more natural distribution
+                    timing_data = {"segments": []}
+                    current_time = 0.0
+                    
+                    for sentence in sentences:
+                        # Clean the sentence for better subtitle display
+                        sentence = clean_sentence(sentence)
+                        if not sentence:  # Skip empty sentences
+                            continue
+                        
+                        # Estimate duration based on sentence length, with adjustments
+                        # 1. Base timing: characters in sentence / total characters * total duration
+                        # 2. Adjustment for natural pauses between sentences
+                        # 3. Adjustment for slower speaking at the beginning and end
+                        
+                        # Base estimate (proportional to character count)
+                        char_ratio = len(sentence) / total_chars
+                        sentence_duration = char_ratio * duration
+                        
+                        # Small adjustment for natural pauses at punctuation (add a little extra time)
+                        if sentence.endswith(('.', '!', '?')):
+                            sentence_duration += 0.2  # Add 200ms for major punctuation
+                        elif sentence.endswith((':', ';')):
+                            sentence_duration += 0.1  # Add 100ms for minor punctuation
+                        
+                        # Create segment
+                        segment = {
+                            "text": sentence,
+                            "start_time": current_time,
+                            "end_time": current_time + sentence_duration
+                        }
+                        timing_data["segments"].append(segment)
+                        
+                        # Update current time for next segment
+                        current_time += sentence_duration
+                    
+                    # Normalize timing to match actual audio duration
+                    if timing_data["segments"] and timing_data["segments"][-1]["end_time"] != duration:
+                        # Scale all timings to match the actual audio duration
+                        scale_factor = duration / timing_data["segments"][-1]["end_time"]
+                        
+                        # Apply scaling to all segments
+                        for segment in timing_data["segments"]:
+                            segment["start_time"] *= scale_factor
+                            segment["end_time"] *= scale_factor
+                        
+                        # Ensure the last segment ends at the exact audio duration
+                        if timing_data["segments"]:
+                            timing_data["segments"][-1]["end_time"] = duration
+                except Exception as e:
+                    print(f"Warning: Could not create detailed timing: {str(e)}")
+                    # Create at least one basic timing segment with estimated duration
+                    estimated_duration = len(text.split()) * 0.3  # Rough estimate: 0.3 seconds per word
+                    timing_data = {"segments": [{
+                        "text": text,
+                        "start_time": 0,
+                        "end_time": estimated_duration
+                    }]}
+                
+                # Save timing data with retry
+                timing_file = output_file.replace('.wav', '_timing.json')
+                for timing_retry in range(3):
+                    try:
+                        # Validate and potentially correct the timing data
+                        validate_audio_timing(output_file, timing_data)
+                        
+                        # Save the (potentially corrected) timing data
+                        with open(timing_file, 'w') as f:
+                            json.dump(timing_data, f, indent=2)
+                        break
+                    except (PermissionError, OSError) as e:
+                        print(f"Error saving timing file on attempt {timing_retry+1}: {e}")
+                        if timing_retry < 2:
+                            await asyncio.sleep(1)
+                
+                print(f"Successfully generated audio for '{text[:30]}...' (truncated)")
+                return True
+                
+            except ConnectionError as ce:
+                print(f"Connection error on attempt {retry+1}: {ce}")
+                # Wait before retrying
+                if retry < max_retries - 1:
+                    wait_time = (retry + 1) * 2  # Progressive backoff
+                    print(f"Waiting {wait_time} seconds before retry...")
+                    await asyncio.sleep(wait_time)
+            except Exception as e:
+                print(f"Error in TTS request on attempt {retry+1}: {e}")
+                # For any errors, try again if retries remain
+                if retry < max_retries - 1:
+                    await asyncio.sleep(2)
         
-        # Save timing data to file
-        timing_file = output_file.replace('.mp3', '_timing.json')
-        with open(timing_file, 'w') as f:
-            json.dump(timing_data, f, indent=2)
-            print(f"Created timing file with {len(timing_data['segments'])} segments: {timing_file}")
+        # If we got here, all retries failed
+        print(f"Failed to generate any audio. Creating silent placeholder.")
         
-        return True
+        # Create an empty placeholder file with error handling
+        silent_created = False
+        for create_retry in range(3):
+            try:
+                # Try a different filename if needed
+                retry_output_file = output_file
+                if create_retry > 0:
+                    retry_output_file = output_file.replace('.wav', f'_silent_{create_retry}.wav')
+                
+                # Remove existing file if it exists
+                if os.path.exists(retry_output_file):
+                    try:
+                        os.remove(retry_output_file)
+                    except:
+                        pass
+                
+                # Create a silent audio file
+                silent_wav = AudioSegment.silent(duration=5000)
+                silent_wav.export(retry_output_file, format="wav")
+                output_file = retry_output_file  # Update the output file name
+                silent_created = True
+                break
+            except Exception as e:
+                print(f"Error creating silent placeholder (attempt {create_retry+1}): {e}")
+                if create_retry < 2:
+                    await asyncio.sleep(1)
+        
+        # Create a basic timing file
+        if silent_created:
+            timing_file = output_file.replace('.wav', '_timing.json')
+            try:
+                with open(timing_file, 'w') as f:
+                    json.dump({
+                        "segments": [{
+                            "text": text,
+                            "start_time": 0,
+                            "end_time": 5.0
+                        }]
+                    }, f, indent=2)
+            except Exception as e:
+                print(f"Failed to create timing file for silent placeholder: {e}")
+        
+        return False
+            
     except Exception as e:
-        print(f"Error in text_to_sech: {str(e)}")
+        print(f"Error in text_to_speech: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return False
 
 def get_current_subtitle(timing_segments, current_time, default_text=''):
-    """Get the current subtitle text based on timing information.
+    """Get the current subtitle text based on timing information."""
+    # If timing_segments contains proper AudioClip object, use its method
+    if isinstance(timing_segments, AudioClip):
+        return timing_segments.get_current_subtitle(current_time, default_text)
     
-    Args:
-        timing_segments: List of timing segments with text and timestamps
-        current_time: Current time in the audio playback
-        default_text: Default text if no matching segment is found
-        
-    Returns:
-        Tuple of (current_subtitle_text, speaker_name)
-    """
+    # Otherwise, use the original implementation
     if not timing_segments or timing_segments is None:
         return default_text, None
     
@@ -338,17 +594,24 @@ def get_current_subtitle(timing_segments, current_time, default_text=''):
 async def process_debate_segments(segments: List[Dict[str, str]], output_dir: str = 'outputs/audio_output') -> bool:
     """Process debate segments and generate audio."""
     try:
-        # Clean output directory before starting
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Clean output directory before starting, but do it safely
         if os.path.exists(output_dir):
             for file in os.listdir(output_dir):
                 try:
                     file_path = os.path.join(output_dir, file)
                     if os.path.isfile(file_path):
-                        os.remove(file_path)
+                        try:
+                            os.remove(file_path)
+                            print(f"Removed old file: {file}")
+                        except PermissionError:
+                            print(f"Warning: Could not remove file in use: {file} - will use a different filename")
+                        except Exception as e:
+                            print(f"Warning: Could not remove old file {file}: {e}")
                 except Exception as e:
-                    print(f"Warning: Could not remove old file {file}: {e}")
-        
-        os.makedirs(output_dir, exist_ok=True)
+                    print(f"Warning: Error accessing file {file}: {e}")
         
         success_count = 0
         for i, segment in enumerate(segments):
@@ -356,45 +619,32 @@ async def process_debate_segments(segments: List[Dict[str, str]], output_dir: st
             text = segment["text"]
             
             # Ensure we capture complete text, even without labels
-            # This will help prevent missing text like "Welcome to our AI debate"
             text = text.strip()
             
-            # Select voice based on speaker
+            # Select voice based on speaker using integer ID mapping
             voice = VOICES.get(speaker, VOICES['Narrator'])
             
-            # Create audio file
-            output_file = f'{output_dir}/part_{i:02d}.mp3'
+            # Create audio file with index-based naming
+            # If file is in use, the text_to_speech function will handle creating an alternate name
+            output_file = f'{output_dir}/part_{i:02d}.wav'
             
-            print(f"Generating audio for segment {i+1}/{len(segments)} - Speaker: {speaker}")
+            print(f"Generating audio for segment {i+1}/{len(segments)} - Speaker: {speaker} (Voice ID: {voice})")
             
-            success = await text_to_speech(text, voice, output_file)
+            # Process segments with retries
+            success = await text_to_speech(text, voice, output_file, max_retries=3)
             
             if success:
                 success_count += 1
+                print(f"Successfully created audio for segment {i+1}")
             else:
-                print(f"Failed to create audio for segment {i+1}")
-                # Create an empty placeholder file to maintain sequence numbering
-                with open(output_file, 'wb') as f:
-                    # Write a minimal valid MP3 header - 3 seconds of silence
-                    silent_mp3 = AudioSegment.silent(duration=3000)
-                    silent_mp3.export(f, format="mp3")
-                print(f"Created placeholder silent audio for segment {i+1}")
-                
-                # Create a basic timing file
-                timing_file = output_file.replace('.mp3', '_timing.json')
-                with open(timing_file, 'w') as f:
-                    json.dump({
-                        "segments": [{
-                            "text": text,
-                            "start_time": 0,
-                            "end_time": 3.0
-                        }]
-                    }, f, indent=2)
+                print(f"Failed to create audio for segment {i+1} after retries")
         
         print(f"Successfully created {success_count}/{len(segments)} audio segments")
         return success_count > 0
     except Exception as e:
         print(f"Error in process_debate_segments: {e}")
+        import traceback
+        print(traceback.format_exc())
         return False
 
 async def generate_debate_speech(segments: List[Dict[str, str]], 
@@ -406,3 +656,25 @@ async def generate_debate_speech(segments: List[Dict[str, str]],
     except Exception as e:
         print(f"Error generating debate speech: {e}")
         return False
+
+def clean_sentence(text):
+    """Clean up a sentence for better subtitle display.
+    
+    Args:
+        text: The text to clean
+        
+    Returns:
+        The cleaned text
+    """
+    # Remove extra spaces
+    text = ' '.join(text.split())
+    
+    # Ensure text doesn't start with punctuation (common in incomplete sentences)
+    while text and text[0] in ',.;:!?':
+        text = text[1:].lstrip()
+    
+    # Capitalize first letter if it's a new sentence 
+    if text and not text[0].isupper() and not text[0].isdigit():
+        text = text[0].upper() + text[1:]
+    
+    return text

@@ -1,18 +1,24 @@
 def get_font_metrics(font, text):
-    """Get font metrics in a way that works with both old and new Pillow versions."""
+    """Get the width and height of text using the most appropriate method
+    for the version of PIL being used.
+    
+    Args:
+        font: PIL ImageFont object
+        text: Text string to measure
+        
+    Returns:
+        Tuple of (width, height) in pixels
+    """
     try:
-        # Try new Pillow methods first
-        bbox = font.getbbox(text)
-        return bbox[2] - bbox[0], bbox[3] - bbox[1]  # width, height
+        # New method in newer versions of PIL
+        left, top, right, bottom = font.getbbox(text)
+        return (right - left, bottom - top)
     except AttributeError:
         try:
-            # Try getlength for width (intermediate Pillow versions)
-            width = font.getlength(text)
-            # For height, we'll use a reference character
-            _, height = font.getsize("Tg")
-            return width, height
+            # getlength is available in some versions
+            return (font.getlength(text), font.getsize(text)[1])
         except AttributeError:
-            # Fall back to old getsize method
+            # Fall back to older getsize method
             return font.getsize(text)
 
 def wrap_text(text, font, max_width):
@@ -39,94 +45,56 @@ def wrap_text(text, font, max_width):
     
     return lines
 
-def split_text_into_chunks(text: str, max_chars: int = 60) -> list:
-    """
-    Split text into smaller parts (sentences or parts of sentences) for better subtitle timing.
+def split_text_into_chunks(text, max_chars=80):
+    """Split text into chunks for timing purposes.
     
     Args:
-        text: The text to split
-        max_chars: Maximum number of characters per segment that's
-                  appropriate for subtitle display.
-    
-    Returns a list of text chunks optimized for subtitle display.
+        text: Text to split
+        max_chars: Maximum characters per chunk
+        
+    Returns:
+        List of text chunks
     """
-    if not text:
-        return []
+    # First, check if the text is short enough to use as-is
+    if len(text) <= max_chars:
+        return [text]
+        
+    # Try to split on sentence boundaries
+    sentences = text.replace('. ', '.\n').replace('! ', '!\n').replace('? ', '?\n').split('\n')
     
-    # First, try to split by sentences
-    sentence_enders = ['. ', '! ', '? ', '.\n', '!\n', '?\n', ':"', '."']
-    sentences = []
-    last_end = 0
+    # Initialize result chunks
+    chunks = []
+    current_chunk = ""
     
-    # Find all sentence endings
-    for i in range(len(text) - 1):
-        for ender in sentence_enders:
-            if i + len(ender) <= len(text) and text[i:i+len(ender)].startswith(ender):
-                sentences.append(text[last_end:i+1])
-                last_end = i + 1
-                while last_end < len(text) and text[last_end] in [' ', '\n']:
-                    last_end += 1
-                break
-    
-    # Add the last part if there's any remaining text
-    if last_end < len(text):
-        sentences.append(text[last_end:])
-    
-    # If no sentences were found or we only have one sentence, split by commas, colons, or semicolons
-    if len(sentences) <= 1:
-        for sentence in sentences[:]:  # Use a copy of the list
-            for separator in [', ', '; ', ': ']:
-                parts = sentence.split(separator)
-                if len(parts) > 1:
-                    sentences = []
-                    for i, part in enumerate(parts):
-                        if i < len(parts) - 1:
-                            sentences.append(part + separator)
-                        else:
-                            sentences.append(part)
-                    break
-    
-    # If we still have long sentences, break them up further
-    final_segments = []
     for sentence in sentences:
-        if len(sentence) <= max_chars:
-            final_segments.append(sentence)
-        else:
-            # Break up by words while respecting max_chars
-            words = sentence.split(' ')
-            current_segment = ""
+        # If adding this sentence would exceed the limit, start a new chunk
+        if len(current_chunk) + len(sentence) + 1 > max_chars:
+            if current_chunk:
+                chunks.append(current_chunk)
             
-            for word in words:
-                if len(current_segment) + len(word) + 1 <= max_chars:
-                    if current_segment:
-                        current_segment += " " + word
+            # If the sentence itself is too long, split it by words
+            if len(sentence) > max_chars:
+                words = sentence.split()
+                current_chunk = ""
+                for word in words:
+                    if len(current_chunk) + len(word) + 1 > max_chars:
+                        chunks.append(current_chunk)
+                        current_chunk = word
                     else:
-                        current_segment = word
-                else:
-                    # Current segment is full, start a new one
-                    if current_segment:
-                        final_segments.append(current_segment)
-                    current_segment = word
-            
-            # Add the last segment if there's any remaining text
-            if current_segment:
-                final_segments.append(current_segment)
-    
-    # Ensure no empty segments
-    final_segments = [segment.strip() for segment in final_segments if segment.strip()]
-    
-    # Additional pass to merge very short segments with neighbors if possible
-    if len(final_segments) > 1:
-        i = 0
-        while i < len(final_segments) - 1:
-            curr_segment = final_segments[i]
-            next_segment = final_segments[i + 1]
-            
-            # If combining them would still be under max_chars, merge them
-            if len(curr_segment) + len(next_segment) + 1 <= max_chars:
-                final_segments[i] = curr_segment + " " + next_segment
-                final_segments.pop(i + 1)
+                        if current_chunk:
+                            current_chunk += " " + word
+                        else:
+                            current_chunk = word
             else:
-                i += 1
+                current_chunk = sentence
+        else:
+            if current_chunk:
+                current_chunk += " " + sentence
+            else:
+                current_chunk = sentence
     
-    return final_segments
+    # Add the last chunk if it has content
+    if current_chunk:
+        chunks.append(current_chunk)
+        
+    return chunks
