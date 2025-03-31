@@ -1,14 +1,15 @@
-import pytest
-from unittest.mock import Mock, patch, mock_open
 import os
-import json
-import asyncio
+from unittest.mock import Mock, patch, mock_open
+
+import pytest
+
 from debate_to_speech import process_debate
+
 
 @pytest.mark.asyncio
 async def test_process_debate():
     """Test full debate processing."""
-    mock_content = """Narrator: Welcome
+    """Narrator: Welcome
 AI Debater 1: First argument
 AI Debater 2: Counter argument"""
     
@@ -64,7 +65,7 @@ async def test_text_to_speech_from_utils():
                     from utils.audio_utils import text_to_speech
                     
                     # Test successful conversion
-                    result = await text_to_speech("Test text", "en-US-JennyNeural", "test.mp3")
+                    result = await text_to_speech("Test text", 1, "test.mp3")
                     assert result == True
                     mock_communicate.assert_called_once()
 

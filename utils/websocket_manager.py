@@ -2,9 +2,10 @@ import asyncio
 import json
 import websockets
 from typing import Optional, Any, Dict, List
+import time
 
 class WebSocketManager:
-    def __init__(self, uri: str = "ws://localhost:8765", max_retries: int = 3, retry_delay: int = 2):
+    def __init__(self, uri: str = "ws://localhost:9000", max_retries: int = 3, retry_delay: int = 2):
         self.uri = uri
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -22,7 +23,7 @@ class WebSocketManager:
                     print(f"ERROR: Could not connect to TTS server at {self.uri}. Please make sure the server is running.")
                     print(f"To start the TTS server, run the following commands:")
                     print(f"  cd TTS-Provider")
-                    print(f"  python run_server.py")
+                    print(f"  python -m run_server")
                     raise ConnectionError(f"Failed to connect to TTS service after {self.max_retries} attempts: {e}")
                 print(f"Connection attempt {attempt + 1} failed: {str(e)}")
                 print(f"Retrying in {self.retry_delay} seconds...")
@@ -73,7 +74,9 @@ class WebSocketManager:
         return chunks
 
     async def send_tts_request(self, text: str, speaker: int, sample_rate: int = 24000, 
-                           response_mode: str = "stream", max_audio_length_ms: int = 300000) -> Dict[str, Any]:
+                           response_mode: str = "stream", max_audio_length_ms: int = 300000,
+                           model: str = None, rate: str = None, volume: str = None, 
+                           pitch: str = None) -> Dict[str, Any]:
         """Send a TTS request and return the response metadata and audio data.
         
         Args:
@@ -82,6 +85,10 @@ class WebSocketManager:
             sample_rate: The sample rate for the generated audio (default: 24000)
             response_mode: The response mode, either "stream" or "file" (default: "stream")
             max_audio_length_ms: Maximum audio length in milliseconds (default: 300000 - 5 minutes)
+            model: The TTS model to use (e.g., "sesame", "edge")
+            rate: Voice rate adjustment (Edge TTS only, e.g., "+10%")
+            volume: Voice volume adjustment (Edge TTS only, e.g., "+20%")
+            pitch: Voice pitch adjustment (Edge TTS only, e.g., "-5%")
             
         Returns:
             Dict containing metadata and audio data
@@ -95,16 +102,33 @@ class WebSocketManager:
             text_length = len(text.encode('utf-8'))
             if text_length > self.max_message_size:
                 print(f"Text is too long ({text_length} bytes), splitting into chunks...")
-                return await self._process_long_text(websocket, text, speaker, sample_rate, response_mode, max_audio_length_ms)
+                return await self._process_long_text(websocket, text, speaker, sample_rate, response_mode, 
+                                                    max_audio_length_ms, model, rate, volume, pitch)
             
             # Prepare request data using the correct parameter names for TTS-Provider
             request = {
                 "text": text,
-                "speaker": speaker,  # Changed from voice_id to speaker
+                "speaker": speaker,
                 "sample_rate": sample_rate,
-                "response_mode": response_mode,  # Add response_mode parameter
-                "max_audio_length_ms": max_audio_length_ms  # Add max_audio_length_ms parameter
+                "response_mode": response_mode,
+                "max_audio_length_ms": max_audio_length_ms
             }
+            
+            # Add model selection if specified
+            if model:
+                request["model_type"] = model
+                
+            # Add Edge TTS specific parameters if provided
+            extra_params = {}
+            if rate:
+                extra_params["rate"] = rate
+            if volume:
+                extra_params["volume"] = volume
+            if pitch:
+                extra_params["pitch"] = pitch
+                
+            if extra_params:
+                request["extra_params"] = extra_params
             
             # Send request
             print(f"Sending TTS request: {json.dumps(request)}")
@@ -143,7 +167,47 @@ class WebSocketManager:
                     expected_length = response.get("length_bytes", 0)
                     print(f"Expecting to receive {expected_length} bytes of audio data")
                     
-                    audio_data = await websocket.recv()
+                    # First chunk
+                    chunk = await websocket.recv()
+                    chunks = [chunk]
+                    total_received = len(chunk)
+                    
+                    # If we received less than expected, try to receive more chunks
+                    if total_received < expected_length:
+                        print(f"Received first chunk: {total_received} bytes. Expecting more chunks...")
+                        try:
+                            # Set a timeout for receiving remaining chunks
+                            # Use a while loop with timeout to receive all chunks
+                            timeout = 30  # 30 seconds timeout for receiving all chunks
+                            start_time = time.time()
+                            
+                            while total_received < expected_length and (time.time() - start_time) < timeout:
+                                try:
+                                    # Try to receive the next chunk with a 5-second timeout
+                                    next_chunk = await asyncio.wait_for(websocket.recv(), timeout=5)
+                                    chunks.append(next_chunk)
+                                    chunk_size = len(next_chunk)
+                                    total_received += chunk_size
+                                    print(f"Received additional chunk: {chunk_size} bytes. Total so far: {total_received}/{expected_length} bytes")
+                                    
+                                    # If this chunk was small, we might be at the end
+                                    if chunk_size < 100000:  # Less than 100KB
+                                        print(f"Received small chunk ({chunk_size} bytes), likely finished transmission")
+                                        break
+                                except asyncio.TimeoutError:
+                                    print(f"Timeout waiting for next chunk. Received {total_received}/{expected_length} bytes so far.")
+                                    break
+                            
+                            # Check if we've received everything
+                            if total_received >= expected_length:
+                                print(f"Successfully received all {total_received} bytes of audio data")
+                            else:
+                                print(f"WARNING: Only received {total_received}/{expected_length} bytes ({(total_received/expected_length)*100:.1f}%)")
+                        except Exception as e:
+                            print(f"Error receiving additional chunks: {e}")
+                    
+                    # Combine all chunks
+                    audio_data = b''.join(chunks)
                     actual_length = len(audio_data)
                     
                     print(f"Actually received {actual_length} bytes of audio data")
@@ -163,7 +227,10 @@ class WebSocketManager:
             # Close the connection when done
             await websocket.close()
 
-    async def _process_long_text(self, websocket, text: str, speaker: int, sample_rate: int, response_mode: str, max_audio_length_ms: int) -> Dict[str, Any]:
+    async def _process_long_text(self, websocket, text: str, speaker: int, sample_rate: int, 
+                             response_mode: str, max_audio_length_ms: int, 
+                             model: str = None, rate: str = None, volume: str = None, 
+                             pitch: str = None) -> Dict[str, Any]:
         """Process long text by splitting it into chunks, sending separate requests, and combining results."""
         chunks = self._split_text(text)
         print(f"Split text into {len(chunks)} chunks")
@@ -179,8 +246,24 @@ class WebSocketManager:
                     "speaker": speaker,
                     "sample_rate": sample_rate,
                     "response_mode": "stream",  # Always use stream mode for chunks
-                    "max_audio_length_ms": max_audio_length_ms  # Add max_audio_length_ms parameter
+                    "max_audio_length_ms": max_audio_length_ms
                 }
+                
+                # Add model selection if specified
+                if model:
+                    request["model_type"] = model
+                    
+                # Add Edge TTS specific parameters if provided
+                extra_params = {}
+                if rate:
+                    extra_params["rate"] = rate
+                if volume:
+                    extra_params["volume"] = volume
+                if pitch:
+                    extra_params["pitch"] = pitch
+                    
+                if extra_params:
+                    request["extra_params"] = extra_params
                 
                 # Send request
                 print(f"Sending chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")

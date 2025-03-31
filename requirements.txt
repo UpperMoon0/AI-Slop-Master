@@ -1,12 +1,17 @@
 # Basic requirements
 pydub>=0.25.1
-numpy>=1.21.0
-openai>=1.2.0
+numpy>=1.24.3
+matplotlib>=3.7.1
+tiktoken>=0.4.0
+openai>=0.28.0
+python-dotenv>=1.0.0
+vosk>=0.3.45
+ffmpeg-python>=0.2.0
+moviepy>=1.0.3
+opencv-python>=4.7.0.72
+edge-tts>=6.1.10
 tqdm>=4.64.0
 Pillow>=9.2.0
-moviepy>=1.0.3
-opencv-python>=4.7.0
 pytest>=7.0.0
 pytest-asyncio>=0.20.0
-websockets>=12.0
-python-dotenv~=1.1.0
+websockets>=11.0.3

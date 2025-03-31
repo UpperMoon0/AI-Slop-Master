@@ -8,14 +8,25 @@ from utils.text_utils import split_text_into_chunks
 from utils.websocket_manager import WebSocketManager
 from audio.audio_clip import AudioClip
 
-# Update voice mapping to use Sesame's integer-based speaker IDs
+# Update voice mapping to include Edge TTS voices
 VOICES = {
-    "Narrator": 0,       # Default male voice
-    "AI Debater 1": 1,   # Different voice
-    "AI Debater 2": 0,   # Back to the first voice
-    "Jane": 1,           # Female voice
-    "Valentino": 0       # Male voice
+    # Original Sesame CSM-1B voices
+    "Narrator": {"speaker": 0, "model": "sesame"},     # Default male voice
+    "AI Debater 1": {"speaker": 1, "model": "sesame"}, # Female voice
+    "AI Debater 2": {"speaker": 0, "model": "sesame"}, # Male voice
+    "Jane": {"speaker": 1, "model": "sesame"},         # Female voice
+    "Valentino": {"speaker": 0, "model": "sesame"},    # Male voice
+    
+    # Edge TTS voices
+    "Jenny": {"speaker": 1, "model": "edge", "rate": "+0%", "volume": "+0%"},  # US Female
+    "Guy": {"speaker": 0, "model": "edge", "rate": "+0%", "volume": "+0%"},    # US Male
+    "Aria": {"speaker": 2, "model": "edge", "rate": "+0%", "volume": "+0%"},   # US Female (professional)
+    "Ryan": {"speaker": 3, "model": "edge", "rate": "+0%", "volume": "+0%"},   # UK Male
+    "Sonia": {"speaker": 4, "model": "edge", "rate": "+0%", "volume": "+0%"}   # UK Female
 }
+
+# Default voice to use if a speaker name isn't found
+DEFAULT_VOICE = {"speaker": 0, "model": "sesame"}
 
 def get_segment_audio_file(segment_index):
     """Get the audio file for a specific segment index."""
@@ -242,8 +253,18 @@ def validate_audio_timing(output_file, timing_data):
         print(f"Error validating timing: {e}")
         return False
 
-async def text_to_speech(text: str, voice: int, output_file: str, max_retries: int = 3) -> bool:
-    """Convert text to speech using WebSocket TTS service."""
+async def text_to_speech(text: str, voice_name_or_id, output_file: str, max_retries: int = 3) -> bool:
+    """Convert text to speech using WebSocket TTS service.
+    
+    Args:
+        text: The text to convert to speech
+        voice_name_or_id: Either a speaker name from VOICES dict or a speaker ID
+        output_file: Path to save the generated audio
+        max_retries: Number of retry attempts
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
         # Ensure directory exists
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -252,22 +273,41 @@ async def text_to_speech(text: str, voice: int, output_file: str, max_retries: i
         # 150 seconds should be enough for most debate segments without stressing the model
         max_audio_length_ms = 150000  # 2.5 minutes
         
+        # Determine the voice configuration based on input
+        voice_config = DEFAULT_VOICE
+        
+        if isinstance(voice_name_or_id, str) and voice_name_or_id in VOICES:
+            # If a voice name is provided and exists in the VOICES dictionary
+            voice_config = VOICES[voice_name_or_id]
+        elif isinstance(voice_name_or_id, int):
+            # If a speaker ID is provided, use it with the default model
+            voice_config = {"speaker": voice_name_or_id, "model": "sesame"}
+        
         # Try multiple times in case of connection issues
         for retry in range(max_retries):
             try:
                 # Create WebSocket manager without timeout
                 ws_manager = WebSocketManager()  # No timeout, wait indefinitely
                 
-                print(f"TTS attempt {retry+1}/{max_retries} for {output_file}")
+                print(f"TTS attempt {retry+1}/{max_retries} for {output_file} using model {voice_config['model']}")
                 
-                # Send TTS request with correct parameters including higher max_audio_length_ms
-                result = await ws_manager.send_tts_request(
-                    text=text, 
-                    speaker=voice, 
-                    sample_rate=24000,
-                    response_mode="stream",
-                    max_audio_length_ms=max_audio_length_ms
-                )
+                # Send TTS request with correct parameters based on voice configuration
+                kwargs = {
+                    "text": text,
+                    "speaker": voice_config["speaker"],
+                    "sample_rate": 24000,
+                    "response_mode": "stream",
+                    "max_audio_length_ms": max_audio_length_ms,
+                    "model": voice_config["model"]
+                }
+                
+                # Add Edge TTS specific parameters if provided
+                if voice_config["model"] == "edge":
+                    for param in ["rate", "volume", "pitch"]:
+                        if param in voice_config:
+                            kwargs[param] = voice_config[param]
+                
+                result = await ws_manager.send_tts_request(**kwargs)
                 
                 # Extract metadata
                 metadata = result.get("metadata", {})
@@ -317,42 +357,75 @@ async def text_to_speech(text: str, voice: int, output_file: str, max_retries: i
                     
                     # First try to use forced alignment if available (most accurate)
                     try:
-                        import torch
-                        from gentle_force import ForceAligner
+                        # Remove redundant imports that are already available at module level
+                        # import os  # Already imported at module level
+                        # import json  # Already imported at module level
+                        from vosk import Model, KaldiRecognizer, SetLogLevel
                         
-                        print("Attempting to use forced alignment for precise timing...")
-                        # Convert audio to the format needed by the aligner
+                        print("Attempting to use Vosk for precise timing...")
+                        # Suppress excessive logging
+                        SetLogLevel(-1)
+                        
+                        # Check for model
+                        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "vosk-model-small-en-us-0.15")
+                        if not os.path.exists(model_path):
+                            print(f"Vosk model not found at {model_path}")
+                            print(f"Please download the model by running:")
+                            print(f"  1. mkdir -p AI-Slop-Master/models")
+                            print(f"  2. cd AI-Slop-Master/models")
+                            print(f"  3. curl -LO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip")
+                            print(f"  4. unzip vosk-model-small-en-us-0.15.zip")
+                            # Fall back to our improved timing estimation
+                            raise ImportError("Vosk model not found - download instructions printed above")
+                        
+                        # Convert audio to the format needed by Vosk (16kHz, mono)
                         temp_audio_path = output_file.replace('.wav', '_temp.wav')
                         audio.export(temp_audio_path, format="wav", parameters=["-ac", "1", "-ar", "16000"])
                         
-                        # Initialize the forced aligner
-                        aligner = ForceAligner()
+                        # Initialize the model and recognizer
+                        model = Model(model_path)
+                        with open(temp_audio_path, "rb") as wf:
+                            # Create recognizer
+                            rec = KaldiRecognizer(model, 16000)
+                            rec.SetWords(True)  # Enable word-level timestamps
+                            
+                            # Feed audio data
+                            wf.read(44)  # Skip WAV header
+                            while True:
+                                data = wf.read(4000)
+                                if len(data) == 0:
+                                    break
+                                if rec.AcceptWaveform(data):
+                                    pass  # Process intermediate results if needed
+                            
+                            # Get final results
+                            result = json.loads(rec.FinalResult())
                         
-                        # Perform alignment
-                        alignment = aligner.align(audio_path=temp_audio_path, text=text)
-                        
-                        # Process alignment results
-                        if alignment and alignment.words:
+                        # Process results if words are available
+                        if "result" in result and result["result"]:
+                            words = result["result"]
+                            
                             # Group words into reasonable chunks for subtitles
                             timing_data = {"segments": []}
                             current_segment = {"text": "", "start_time": 0, "end_time": 0}
                             word_count = 0
                             
-                            for word in alignment.words:
-                                # Start a new segment every ~10-15 words or at punctuation
-                                if (word_count >= 12 and word.word.endswith(('.', ',', '!', '?', ':', ';'))) or word_count >= 15:
+                            for word in words:
+                                # Start a new segment every ~10-15 words or at reasonable points
+                                end_marker = word["word"].endswith(('.', ',', '!', '?', ':', ';'))
+                                if (word_count >= 10 and end_marker) or word_count >= 15:
                                     if current_segment["text"]:
-                                        current_segment["end_time"] = word.end
+                                        current_segment["end_time"] = word["end"]
                                         timing_data["segments"].append(current_segment)
-                                        current_segment = {"text": "", "start_time": word.end, "end_time": 0}
+                                        current_segment = {"text": "", "start_time": word["end"], "end_time": 0}
                                         word_count = 0
                                 
                                 # Add word to current segment
                                 if current_segment["text"]:
-                                    current_segment["text"] += " " + word.word
+                                    current_segment["text"] += " " + word["word"]
                                 else:
-                                    current_segment["text"] = word.word
-                                    current_segment["start_time"] = word.start
+                                    current_segment["text"] = word["word"]
+                                    current_segment["start_time"] = word["start"]
                                 
                                 word_count += 1
                             
@@ -361,7 +434,11 @@ async def text_to_speech(text: str, voice: int, output_file: str, max_retries: i
                                 current_segment["end_time"] = duration
                                 timing_data["segments"].append(current_segment)
                             
-                            print(f"Successfully created {len(timing_data['segments'])} timing segments using forced alignment")
+                            # Clean up the segments
+                            for segment in timing_data["segments"]:
+                                segment["text"] = clean_sentence(segment["text"])
+                            
+                            print(f"Successfully created {len(timing_data['segments'])} timing segments using Vosk")
                             
                             # Clean up temporary file
                             try:
@@ -370,13 +447,13 @@ async def text_to_speech(text: str, voice: int, output_file: str, max_retries: i
                                 pass
                             
                             # Skip the fallback timing method
-                            raise StopIteration("Used forced alignment")
+                            raise StopIteration("Used Vosk for alignment")
                     except ImportError:
-                        print("Forced alignment library not available, using fallback timing estimation")
+                        print("Vosk library not available, using fallback timing estimation")
                     except Exception as e:
                         if isinstance(e, StopIteration):
                             raise
-                        print(f"Error during forced alignment: {e}, using fallback timing estimation")
+                        print(f"Error during speech recognition: {e}, using fallback timing estimation")
                     
                     # Fallback: Improved timing estimation based on natural language features
                     print(f"Creating improved timing data for audio with duration {duration:.2f} seconds")
@@ -591,70 +668,111 @@ def get_current_subtitle(timing_segments, current_time, default_text=''):
     
     return default_text, None
 
-async def process_debate_segments(segments: List[Dict[str, str]], output_dir: str = 'outputs/audio_output') -> bool:
-    """Process debate segments and generate audio."""
+async def generate_debate_speech(segments: List[Dict[str, str]], 
+                               output_dir: str = 'outputs/audio_output') -> bool:
+    """Generate speech for all debate segments.
+    
+    Args:
+        segments: List of debate segments, each with 'speaker' and 'text' keys
+        output_dir: Directory to save the generated audio files
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
+        print(f"Generating speech for {len(segments)} segments")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         
-        # Clean output directory before starting, but do it safely
-        if os.path.exists(output_dir):
-            for file in os.listdir(output_dir):
-                try:
-                    file_path = os.path.join(output_dir, file)
-                    if os.path.isfile(file_path):
-                        try:
-                            os.remove(file_path)
-                            print(f"Removed old file: {file}")
-                        except PermissionError:
-                            print(f"Warning: Could not remove file in use: {file} - will use a different filename")
-                        except Exception as e:
-                            print(f"Warning: Could not remove old file {file}: {e}")
-                except Exception as e:
-                    print(f"Warning: Error accessing file {file}: {e}")
+        # Process the segments using the utility function
+        success = await process_debate_segments(segments, output_dir)
+        if success:
+            print("Speech generation completed successfully")
+        else:
+            print("Speech generation failed")
+        return success
         
+    except Exception as e:
+        print(f"Error in generate_debate_speech: {e}")
+        return False
+
+async def process_debate_segments(segments: List[Dict[str, str]], output_dir: str = 'outputs/audio_output') -> bool:
+    """Process debate segments and generate speech.
+    
+    Args:
+        segments: List of debate segments, each with 'speaker' and 'text' keys
+        output_dir: Directory to save the generated audio files
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        total_duration = 0
+        segment_index = 0
         success_count = 0
-        for i, segment in enumerate(segments):
-            speaker = segment["speaker"]
-            text = segment["text"]
-            
-            # Ensure we capture complete text, even without labels
-            text = text.strip()
-            
-            # Select voice based on speaker using integer ID mapping
-            voice = VOICES.get(speaker, VOICES['Narrator'])
-            
-            # Create audio file with index-based naming
-            # If file is in use, the text_to_speech function will handle creating an alternate name
-            output_file = f'{output_dir}/part_{i:02d}.wav'
-            
-            print(f"Generating audio for segment {i+1}/{len(segments)} - Speaker: {speaker} (Voice ID: {voice})")
-            
-            # Process segments with retries
-            success = await text_to_speech(text, voice, output_file, max_retries=3)
-            
-            if success:
-                success_count += 1
-                print(f"Successfully created audio for segment {i+1}")
-            else:
-                print(f"Failed to create audio for segment {i+1} after retries")
         
-        print(f"Successfully created {success_count}/{len(segments)} audio segments")
-        return success_count > 0
+        # Process each segment
+        for segment in segments:
+            speaker_name = segment.get('speaker', 'Narrator')
+            text = segment.get('text', '')
+            
+            if not text.strip():
+                print(f"Warning: Empty text for speaker {speaker_name}, skipping")
+                continue
+            
+            print(f"\nProcessing segment {segment_index} for speaker: {speaker_name}")
+            print(f"Text: {text[:100]}{'...' if len(text) > 100 else ''}")
+            
+            # Get voice configuration - either from VOICES dict or fallback to default voice
+            voice_config = VOICES.get(speaker_name, DEFAULT_VOICE)
+            print(f"Using voice config: {voice_config}")
+            
+            # Output path for this segment
+            output_path = os.path.join(output_dir, f"segment_{segment_index}.wav")
+            timing_path = os.path.join(output_dir, f"segment_{segment_index}_timing.json")
+            
+            # Generate speech
+            success = await text_to_speech(text, speaker_name, output_path)
+            
+            if success and os.path.exists(output_path):
+                # Get duration of the generated audio
+                audio = AudioSegment.from_wav(output_path)
+                duration = len(audio) / 1000.0  # Convert ms to seconds
+                total_duration += duration
+                
+                print(f"Generated audio for segment {segment_index}: {duration:.2f} seconds")
+                success_count += 1
+                
+                # Create a clip object for this segment
+                clip = AudioClip(output_path)
+                
+                # Save speaker and text info in the clip data
+                clip.set_metadata({
+                    "speaker": speaker_name, 
+                    "text": text,
+                    "model": voice_config.get("model", "sesame"),
+                    "segment_index": segment_index
+                })
+                
+                # Save the clip info
+                clip.save()
+                
+                # Increment segment index only for successful generations
+                segment_index += 1
+            else:
+                print(f"Failed to generate audio for segment {segment_index}")
+        
+        print(f"\nSpeech generation summary:")
+        print(f"- Total segments: {len(segments)}")
+        print(f"- Successfully generated: {success_count}")
+        print(f"- Total audio duration: {total_duration:.2f} seconds")
+        
+        return success_count == len(segments)
+    
     except Exception as e:
         print(f"Error in process_debate_segments: {e}")
         import traceback
-        print(traceback.format_exc())
-        return False
-
-async def generate_debate_speech(segments: List[Dict[str, str]], 
-                               output_dir: str = 'outputs/audio_output') -> bool:
-    """Generate speech for all debate segments."""
-    try:
-        success = await process_debate_segments(segments, output_dir)
-        return success
-    except Exception as e:
-        print(f"Error generating debate speech: {e}")
+        traceback.print_exc()
         return False
 
 def clean_sentence(text):
